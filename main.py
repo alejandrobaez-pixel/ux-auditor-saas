@@ -53,7 +53,7 @@ def take_screenshot(url, access_key):
     try:
         if not access_key: return None, None
         encoded_url = requests.utils.quote(url, safe='')
-        params = f"?access_key={access_key}&url={encoded_url}&format=jpg&viewport_width=1024&viewport_height=768&full_page=false&image_quality=60"
+        params = f"?access_key={access_key}&url={encoded_url}&format=jpg&viewport_width=1280&viewport_height=800&full_page=false&image_quality=70"
         screenshot_url = f"https://api.screenshotone.com/take{params}"
         r = requests.get(screenshot_url, timeout=25)
         if r.status_code == 200:
@@ -69,13 +69,9 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     try:
         access_key = os.getenv("SCREENSHOTONE_KEY", "")
 
-        # 1. Scrape homepage
         home_soup, home_content = scrape_page(request.url)
-
-        # 2. Detectar subpáginas del menú
         sub_urls = extract_menu_links(request.url, home_soup, max_links=3)
 
-        # 3. Scrape subpáginas
         all_content_parts = [f"=== PÁGINA PRINCIPAL ===\n{home_content}"]
         pages_info = [{"url": request.url, "screenshot_url": None}]
 
@@ -86,7 +82,6 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
 
         all_content = "\n\n".join(all_content_parts)
 
-        # 4. Capturas de pantalla (home + hasta 2 subpáginas)
         home_b64, home_ss_url = take_screenshot(request.url, access_key)
         pages_info[0]["screenshot_url"] = home_ss_url
 
@@ -95,97 +90,141 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
             if idx + 1 < len(pages_info):
                 pages_info[idx + 1]["screenshot_url"] = ss_url
 
-        # 5. Construir mensaje para GPT
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         user_content = []
 
         if home_b64:
-            user_content.append({"type": "text", "text": f"CAPTURA DE PANTALLA REAL de la página principal ({request.url}):"})
-            user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{home_b64}", "detail": "high"}})
+            user_content.append({"type":"text","text":f"CAPTURA REAL de la página principal ({request.url}):"})
+            user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
 
-        user_content.append({"type": "text", "text": f"""Contenido real extraído de {len(pages_info)} páginas del sitio:
+        user_content.append({"type":"text","text":f"""Contenido extraído de {len(pages_info)} páginas del sitio:
 
 {all_content}
 
 ---
 
-Genera una AUDITORÍA UX B2B ULTRA-DETALLADA analizando TODO desde la perspectiva del Buyer Persona: **{request.persona}**
-
-Piensa y actúa COMO si fueras ese perfil navegando este sitio. ¿Qué le llama la atención? ¿Qué le frustra? ¿Qué le genera confianza?
-
-Estructura tu respuesta en estos 5 módulos OBLIGATORIOS (usa exactamente estos encabezados):
+Genera una AUDITORÍA UX B2B ULTRA-DETALLADA desde la perspectiva exclusiva del Buyer Persona: **{request.persona}**
 
 ## MÓDULO 1: Identidad Visual y Marca
-Evalúa cómo percibe el Buyer Persona estos elementos:
-- **Identidad de Marca**: Logos, isotipos, voz de marca, tono (¿B2B o B2C? ¿tradicional o moderno?)
-- **Diseño Gráfico**: Disposición, espacios en blanco, márgenes, asimetrías, estilo de fotografía
-- **Paleta de Colores**: Colores primarios/secundarios/acento (con nombres o códigos hex), uso, contraste, impacto psicológico
-- **Tipografías**: Familia de fuentes, peso visual, jerarquía, legibilidad para el perfil
+Evalúa cómo percibe el Buyer Persona:
+- **Identidad de Marca**: Logos, tono (¿B2B o B2C?), voz de marca
+- **Diseño Gráfico**: Disposición, espacios, estilo de fotografía
+- **Paleta de Colores**: Primarios/secundarios (hex si posible), contraste, impacto psicológico
+- **Tipografías**: Familia, jerarquía, legibilidad para el perfil
+✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
 
 ## MÓDULO 2: Experiencia de Usuario y Usabilidad UX/UI
-Evalúa desde los ojos del Buyer Persona:
-- **Navegación y Arquitectura**: ¿Qué tan fácil encuentra lo que busca el perfil? Menú, submenús, footer, breadcrumbs
-- **Facilidad de Uso**: Botones, formularios, fluidez, respuesta visual, claridad de CTAs
-- **Coherencia Heurística**: Visibilidad del sistema, prevención de errores, control del usuario
+- **Navegación y Arquitectura**: Facilidad para el perfil de encontrar lo que busca
+- **Facilidad de Uso**: CTAs, formularios, fluidez
+- **Coherencia Heurística**: Visibilidad, prevención de errores, control
+✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
 
 ## MÓDULO 3: Calidad y Relevancia del Contenido
-Evalúa qué tan relevante es el contenido para el Buyer Persona:
-- **Calidad del Contenido**: Profundidad, largo, aporte de valor real para el perfil
-- **Interlinking y Semántica**: Enlaces internos, lógica de navegación, clústeres temáticos
-- **Lenguaje y Tono B2B**: ¿El contenido habla al perfil? ¿Técnico, aspiracional o transaccional? Congruencia con marca
+- **Calidad del Contenido**: Profundidad, valor para el perfil
+- **Interlinking y Semántica**: Clústeres, navegación entre contenidos
+- **Lenguaje y Tono B2B**: ¿El contenido habla al perfil?
+✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
 
 ## MÓDULO 4: Proceso de Compra y E-commerce
-Evalúa el recorrido de compra desde la perspectiva del Buyer Persona:
-- **Accesibilidad de Productos**: ¿A cuántos clics están? ¿Visibles desde menú? ¿En la Home?
-- **Carrito / Cotizador**: Facilidad de agregar, modificar cantidades y especificaciones
-- **Proceso de Checkout**: ¿Rápido? ¿Exige registro? ¿Múltiples métodos de pago? ¿Muestra descuentos?
-- **Políticas Logísticas**: Envíos, devoluciones, transparencia y facilidad de encontrar la info
+- **Accesibilidad de Productos**: Clics para llegar al producto
+- **Carrito / Cotizador**: Facilidad de compra B2B
+- **Proceso de Checkout**: Rapidez, registro, métodos pago
+- **Políticas Logísticas**: Transparencia de envíos y devoluciones
+✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
 
 ## MÓDULO 5: Arquitectura y Estructura SEO
-Evalúa el potencial de encontrabilidad y la estructura del sitio:
-- **Keywords del Menú**: ¿Qué palabras clave refleja la navegación? ¿Relevantes para el perfil?
-- **Keywords Long-tail**: ¿El contenido cubre búsquedas específicas del buyer persona?
-- **Jerarquía y Sitemap**: Estructura de URLs, profundidad del sitio, pilares de contenido
+- **Keywords del Menú**: Palabras clave en navegación
+- **Keywords Long-tail**: Cobertura de búsquedas específicas del perfil
+- **Jerarquía y Sitemap**: Estructura de URLs, profundidad
+✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
 
 ---
 
-Para cada módulo incluye:
-- ✅ **Fortalezas** con ejemplos específicos de las páginas visitadas
-- ❌ **Debilidades críticas** desde la perspectiva del perfil
-- 💡 **Recomendaciones** priorizadas y accionables
+Al FINAL de todo el análisis, incluye OBLIGATORIAMENTE este bloque JSON con tus evaluaciones reales:
 
----
+---JSON_DATA---
+{{
+  "scores": {{
+    "Identidad Visual": 6,
+    "UX Usabilidad": 5,
+    "Contenido": 5,
+    "Proceso Compra": 4,
+    "SEO": 5
+  }},
+  "gap": {{
+    "actual": "Descripción concisa del estado real del sitio (1-2 oraciones con hallazgos clave).",
+    "expected": "Lo que el buyer persona espera encontrar en este tipo de sitio (1-2 oraciones)."
+  }},
+  "matrix": {{
+    "Identidad Visual": {{"base":4,"cumple":2,"parcial":1,"falla":1}},
+    "Exp. Usabilidad": {{"base":3,"cumple":2,"parcial":1,"falla":0}},
+    "Relevancia Contenido": {{"base":3,"cumple":1,"parcial":1,"falla":1}},
+    "Proceso de Compra": {{"base":4,"cumple":1,"parcial":1,"falla":2}},
+    "Estructura SEO": {{"base":3,"cumple":2,"parcial":0,"falla":1}}
+  }},
+  "criteria_status": {{
+    "Identidad Visual": [
+      {{"name":"Identidad de Marca","status":"cumple","note":"Descripción breve"}},
+      {{"name":"Diseño Gráfico","status":"parcial","note":"Descripción breve"}},
+      {{"name":"Paleta de Colores","status":"cumple","note":"Descripción breve"}},
+      {{"name":"Tipografías","status":"parcial","note":"Descripción breve"}}
+    ],
+    "Exp. Usabilidad": [
+      {{"name":"Navegación","status":"cumple","note":"Descripción breve"}},
+      {{"name":"Arquitectura","status":"parcial","note":"Descripción breve"}},
+      {{"name":"Facilidad de Uso","status":"parcial","note":"Descripción breve"}}
+    ],
+    "Relevancia Contenido": [
+      {{"name":"Calidad de contenido","status":"parcial","note":"Descripción breve"}},
+      {{"name":"Interlinking","status":"falla","note":"Descripción breve"}},
+      {{"name":"Lenguaje B2B","status":"cumple","note":"Descripción breve"}}
+    ],
+    "Proceso de Compra": [
+      {{"name":"Accesibilidad","status":"falla","note":"Descripción breve"}},
+      {{"name":"Carrito","status":"parcial","note":"Descripción breve"}},
+      {{"name":"Checkout","status":"falla","note":"Descripción breve"}},
+      {{"name":"Políticas","status":"cumple","note":"Descripción breve"}}
+    ],
+    "Estructura SEO": [
+      {{"name":"Keywords Menú","status":"cumple","note":"Descripción breve"}},
+      {{"name":"Keywords Long-tail","status":"cumple","note":"Descripción breve"}},
+      {{"name":"Jerarquía","status":"falla","note":"Descripción breve"}}
+    ]
+  }},
+  "seo_proposals": [
+    {{"url":"/propuesta-url-b2b/","type":"Clúster B2B Central","color":"purple","desc":"Descripción estratégica de la página propuesta."}},
+    {{"url":"/propuesta-url-transaccional/","type":"Transaccional/Cotización","color":"red","desc":"Descripción estratégica."}},
+    {{"url":"/propuesta-url-inbound/","type":"Inbound / Informativa","color":"green","desc":"Descripción estratégica."}}
+  ],
+  "action_plan": {{
+    "now": [
+      "Acción inmediata 1 (0-30 días, alto impacto, bajo costo).",
+      "Acción inmediata 2.",
+      "Acción inmediata 3."
+    ],
+    "next": [
+      "Mejora estructural 1 (30-90 días).",
+      "Mejora estructural 2.",
+      "Mejora estructural 3."
+    ],
+    "later": [
+      "Inversión estratégica 1 (90+ días, SEO).",
+      "Inversión estratégica 2.",
+      "Inversión estratégica 3."
+    ]
+  }}
+}}
+---END_JSON---
 
-## ANÁLISIS DE BRECHA B2B
-Crea esta tabla comparando la realidad del sitio vs lo que espera el perfil:
-| Dimensión | Realidad Actual del Sitio | Expectativa del Perfil ({request.persona}) |
-|-----------|--------------------------|-------------------------------------------|
-| Comunicación Visual | ... | ... |
-| Confianza Institucional | ... | ... |
-| Eficiencia Operativa | ... | ... |
-| Soporte y Servicio B2B | ... | ... |
-| Proceso de Compra | ... | ... |
+IMPORTANTE: Sustituye TODOS los valores del JSON con los datos reales del análisis. El JSON debe estar completo y válido."""})
 
-## PLAN DE ACCIÓN ESTRATÉGICO
-**[NOW] 0-30 Días (Quick Wins):** Acciones inmediatas de alto impacto y bajo costo
-**[NEXT] 30-90 Días (UX & Flow):** Mejoras estructurales de mediana complejidad
-**[LATER] 90+ Días (SEO Estructural):** Mejoras de largo plazo y posicionamiento
-
----
-
-Al FINAL, añade EXACTAMENTE este bloque con tus puntuaciones reales del 1 al 10:
----SCORES---
-{{"Identidad Visual": 6, "UX Usabilidad": 5, "Contenido": 6, "Proceso Compra": 5, "SEO": 5, "Global": 5.4}}
-"""})
-
-        # 6. Llamar a GPT
         response = client.chat.completions.create(
             model="gpt-5.4-nano",
             messages=[
-                {"role": "system", "content": f"Eres un experto en UX, usabilidad y marketing B2B. Analizas sitios web EXCLUSIVAMENTE desde la perspectiva del Buyer Persona: {request.persona}. Todo tu análisis debe estar filtrado por cómo ese perfil experimenta el sitio. Respondes en español con formato Markdown profesional y muy detallado."},
-                {"role": "user", "content": user_content}
+                {"role":"system","content":f"Eres un experto en UX y marketing B2B. Analizas sitios exclusivamente desde la perspectiva del Buyer Persona: {request.persona}. Respondes en español con Markdown profesional. Al final SIEMPRE incluyes el bloque JSON estructurado exactamente como se solicita."},
+                {"role":"user","content":user_content}
             ],
-            max_completion_tokens=5000
+            max_completion_tokens=6000
         )
 
         return {
@@ -200,4 +239,4 @@ Al FINAL, añade EXACTAMENTE este bloque con tus puntuaciones reales del 1 al 10
 
 @app.get("/")
 def home():
-    return {"status": "UX Auditor Pro Multi-Página - Activo ✅"}
+    return {"status": "UX Auditor Pro — Reporte B2B Estructurado ✅"}
