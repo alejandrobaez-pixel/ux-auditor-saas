@@ -1,6 +1,4 @@
-crewai
-crewai-tools
-langchain-google-genai
 fastapi
 uvicorn
 pydantic
+langchain-google-genai
