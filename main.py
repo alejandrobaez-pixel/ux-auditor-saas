@@ -1,13 +1,11 @@
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from langchain_google_genai import ChatGoogleGenerativeAI
-import os
-import requests
+from openai import OpenAI
+import os, requests
 from bs4 import BeautifulSoup
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,87 +18,38 @@ class AuditRequest(BaseModel):
     persona: str
 
 def scrape_website(url: str) -> str:
-    """Entra a la web real y extrae su contenido de texto."""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Eliminar scripts y estilos que ensucian el texto
-        for tag in soup(["script", "style", "noscript", "meta", "link"]):
-            tag.decompose()
-        
-        # Extraer textos importantes
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+        r = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for tag in soup(["script","style","noscript"]): tag.decompose()
         title = soup.title.string if soup.title else "Sin título"
-        
-        # Extraer encabezados
-        headings = [h.get_text(strip=True) for h in soup.find_all(['h1','h2','h3']) if h.get_text(strip=True)]
-        
-        # Extraer textos de navegación
-        nav_texts = [a.get_text(strip=True) for a in soup.find_all('a') if a.get_text(strip=True)][:50]
-        
-        # Extraer texto general (limitado para no exceder tokens)
-        body_text = soup.get_text(separator='\n', strip=True)
-        # Limitar a 4000 caracteres para no saturar la IA
-        body_text = body_text[:4000]
-        
-        return f"""
-=== TÍTULO DE LA PÁGINA ===
-{title}
-
-=== ENCABEZADOS ENCONTRADOS ===
-{chr(10).join(headings[:20])}
-
-=== ENLACES DE NAVEGACIÓN ===
-{chr(10).join(nav_texts[:30])}
-
-=== CONTENIDO GENERAL (primeros 4000 caracteres) ===
-{body_text}
-        """
+        headings = [h.get_text(strip=True) for h in soup.find_all(['h1','h2','h3'])][:15]
+        links = [a.get_text(strip=True) for a in soup.find_all('a') if a.get_text(strip=True)][:40]
+        body = soup.get_text(separator='\n', strip=True)[:3500]
+        return f"TÍTULO: {title}\n\nENCEBEZADOS:\n{chr(10).join(headings)}\n\nNAVEGACIÓN:\n{chr(10).join(links)}\n\nCONTENIDO:\n{body}"
     except Exception as e:
-        return f"[ADVERTENCIA: No se pudo acceder al sitio directamente. Error: {str(e)}. Gemini analizará con su conocimiento propio.]"
+        return f"[No se pudo acceder al sitio: {e}. Usa conocimiento propio.]"
 
 @app.post("/audit")
 async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     if x_token != os.getenv("ACCESS_TOKEN"):
-        raise HTTPException(status_code=403, detail="Contraseña incorrecta")
-    
+        raise HTTPException(status_code=403, detail="Token inválido")
     try:
-        # 1. Scraping REAL de la web
         site_content = scrape_website(request.url)
-        
-        # 2. Mandar contenido REAL a Gemini
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-pro",
-            google_api_key=os.getenv("GEMINI_API_KEY")
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-5.4-nano",
+            messages=[
+                {"role": "system", "content": f"Eres un experto en UX y usabilidad B2B. Analizas sitios web desde la perspectiva del perfil: {request.persona}. Siempre respondes en español con formato Markdown."},
+                {"role": "user", "content": f"Analiza este sitio web: {request.url}\n\nContenido real extraído:\n{site_content}\n\nGenera una auditoría heurística B2B completa basada en las 10 Heurísticas de Nielsen. Para cada heurística incluye: ✅ qué hace bien, ❌ qué falla, y 💡 recomendación específica."}
+            ],
+            max_tokens=3000
         )
-        
-        prompt = f"""Eres un experto en UX y experiencia B2B. 
-Debes analizar el siguiente contenido REAL extraído del sitio web: {request.url}
-Perfil del usuario evaluador: {request.persona}
-
-CONTENIDO REAL DEL SITIO:
-{site_content}
-
-Con base en este contenido real, genera una auditoría heurística B2B completa usando las 10 Heurísticas de Nielsen adaptadas al perfil de {request.persona}.
-
-Para cada heurística incluye:
-- ✅ Qué hace bien el sitio (basado en lo que encontraste)
-- ❌ Qué falla o falta (basado en el contenido real)
-- 💡 Recomendación específica y accionable
-
-Sé muy específico citando elementos reales que encontraste en el sitio."""
-
-        response = llm.invoke(prompt)
-        return {"report": response.content}
-        
+        return {"report": response.choices[0].message.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def home():
-    return {"status": "UX Auditor Pro con Scraping Real - Activo ✅"}
+    return {"status": "UX Auditor Pro con OpenAI - Activo ✅"}
