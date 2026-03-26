@@ -75,7 +75,7 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
         
         # 2. Mandar contenido REAL a Gemini
         llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
+            model="gemini-3.1-flash-lite-preview",
             google_api_key=os.getenv("GEMINI_API_KEY")
         )
         
