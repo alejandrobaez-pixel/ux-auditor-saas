@@ -44,10 +44,10 @@ def take_screenshot(url: str) -> str | None:
             f"?access_key={access_key}"
             f"&url={url}"
             f"&format=jpg"
-            f"&viewport_width=1280"
-            f"&viewport_height=900"
+            f"&viewport_width=1024"
+            f"&viewport_height=768"
             f"&full_page=false"
-            f"&image_quality=80"
+            f"&image_quality=60"
         )
         
         response = requests.get(screenshot_url, timeout=30)
@@ -117,7 +117,7 @@ Al final, incluye una sección de **Puntuación General** del 1 al 10 por cada c
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_content}
             ],
-            max_completion_tokens=3000
+            max_completion_tokens=4000
         )
         
         screenshot_note = "📸 *Análisis basado en captura de pantalla real + texto extraído*" if screenshot_b64 else "📝 *Análisis basado en texto extraído (screenshot no disponible)*"
