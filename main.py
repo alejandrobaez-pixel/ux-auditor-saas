@@ -23,7 +23,7 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
         raise HTTPException(status_code=403, detail="Contraseña incorrecta")
     
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-pro", google_api_key=os.getenv("GEMINI_API_KEY"))
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=os.getenv("GEMINI_API_KEY"))
         prompt = f"Actúa como un experto en UX especializado en el perfil: {request.persona}. Analiza la URL {request.url} y genera una auditoría heurística B2B detallada. Enfócate en la conversión y usabilidad profesional."
         response = llm.invoke(prompt)
         return {"report": response.content}
