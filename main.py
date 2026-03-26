@@ -53,7 +53,7 @@ def take_screenshot(url, access_key):
     try:
         if not access_key: return None, None
         encoded_url = requests.utils.quote(url, safe='')
-        params = f"?access_key={access_key}&url={encoded_url}&format=jpg&viewport_width=1280&viewport_height=800&full_page=false&image_quality=70"
+        params = f"?access_key={access_key}&url={encoded_url}&format=jpg&viewport_width=1280&viewport_height=800&full_page=true&image_quality=65"
         screenshot_url = f"https://api.screenshotone.com/take{params}"
         r = requests.get(screenshot_url, timeout=25)
         if r.status_code == 200:
