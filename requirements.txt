@@ -1,6 +1,6 @@
 fastapi
 uvicorn
 pydantic
-langchain-google-genai
+openai
 requests
 beautifulsoup4
