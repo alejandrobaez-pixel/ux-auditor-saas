@@ -6,19 +6,13 @@ import os, requests, base64
 from bs4 import BeautifulSoup
 
 app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class AuditRequest(BaseModel):
     url: str
     persona: str
 
-def scrape_website(url: str) -> str:
-    """Extrae el texto real de la web."""
+def scrape_website(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
         r = requests.get(url, headers=headers, timeout=15)
@@ -32,101 +26,66 @@ def scrape_website(url: str) -> str:
     except Exception as e:
         return f"[No se pudo acceder al sitio: {e}]"
 
-def take_screenshot(url: str) -> str | None:
-    """Toma una captura de pantalla real de la web y la devuelve en base64."""
+def take_screenshot(url):
     try:
         access_key = os.getenv("SCREENSHOTONE_KEY")
-        if not access_key:
-            return None
-        
-        screenshot_url = (
-            f"https://api.screenshotone.com/take"
-            f"?access_key={access_key}"
-            f"&url={url}"
-            f"&format=jpg"
-            f"&viewport_width=1024"
-            f"&viewport_height=768"
-            f"&full_page=false"
-            f"&image_quality=60"
-        )
-        
-        response = requests.get(screenshot_url, timeout=30)
-        if response.status_code == 200:
-            # Convertir imagen a base64 para mandársela a GPT-5.4-mini
-            image_base64 = base64.b64encode(response.content).decode('utf-8')
-            return image_base64
-        return None
+        if not access_key: return None, None
+        params = f"?access_key={access_key}&url={url}&format=jpg&viewport_width=1024&viewport_height=768&full_page=false&image_quality=60"
+        screenshot_url = f"https://api.screenshotone.com/take{params}"
+        r = requests.get(screenshot_url, timeout=30)
+        if r.status_code == 200:
+            return base64.b64encode(r.content).decode('utf-8'), screenshot_url
+        return None, None
     except Exception as e:
-        print(f"Error en screenshot: {e}")
-        return None
+        return None, None
 
 @app.post("/audit")
 async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     if x_token != os.getenv("ACCESS_TOKEN"):
         raise HTTPException(status_code=403, detail="Token inválido")
-    
     try:
-        # 1. Scraping de texto real
         site_content = scrape_website(request.url)
-        
-        # 2. Captura de pantalla real
-        screenshot_b64 = take_screenshot(request.url)
-        
-        # 3. Preparar mensaje para GPT-5.4-mini (con visión)
+        screenshot_b64, screenshot_url = take_screenshot(request.url)
+
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
-        system_msg = f"""Eres un experto en UX y usabilidad B2B.
-Analizas sitios web desde la perspectiva del perfil: {request.persona}.
-Tienes acceso tanto al contenido textual extraído como a una captura de pantalla real del sitio.
-Siempre respondes en español con formato Markdown detallado."""
 
         user_content = []
-        
-        # Agregar imagen si está disponible
         if screenshot_b64:
-            user_content.append({
-                "type": "text",
-                "text": f"Aquí tienes una captura de pantalla REAL y actual del sitio {request.url}. Analízala visualmente:"
-            })
-            user_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{screenshot_b64}",
-                    "detail": "high"
-                }
-            })
-        
-        user_content.append({
-            "type": "text",
-            "text": f"""Contenido de texto extraído del sitio:
+            user_content.append({"type":"text","text":f"Captura de pantalla REAL del sitio {request.url}:"})
+            user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{screenshot_b64}","detail":"high"}})
+
+        user_content.append({"type":"text","text":f"""Contenido extraído del sitio:
 {site_content}
 
-Genera una auditoría heurística B2B completa basada en las 10 Heurísticas de Nielsen para el perfil de {request.persona}.
+Genera una auditoría heurística B2B completa de {request.url} para el perfil: {request.persona}.
 
-Para cada heurística incluye:
-- ✅ **Qué hace bien** (con ejemplos visuales específicos si aplica)
-- ❌ **Qué falla** (con referencias a elementos visuales reales)
+Analiza las 10 Heurísticas de Nielsen. Para cada una incluye:
+- ✅ **Qué hace bien** (con ejemplos específicos del sitio)
+- ❌ **Qué falla** (con referencias a elementos reales vistos)
 - 💡 **Recomendación específica y accionable**
 
-Al final, incluye una sección de **Puntuación General** del 1 al 10 por cada criterio."""
-        })
-        
+Al final de toda tu respuesta, añade EXACTAMENTE este bloque (con puntuaciones reales del 1 al 10):
+---SCORES---
+{{"Visibilidad": 7, "Control Usuario": 6, "Consistencia": 7, "Prevención Errores": 5, "Reconocimiento": 6, "Flexibilidad": 5, "Estética": 7, "Diagnóstico Errores": 5, "Ayuda": 4, "Global": 5.8}}
+
+(Reemplaza los números con las puntuaciones reales que asignes según tu análisis)"""})
+
         response = client.chat.completions.create(
-            model="gpt-5.4-mini",  # gpt-5.4-mini tiene visión incluida
+            model="gpt-5.4-nano",
             messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_content}
+                {"role":"system","content":f"Eres un experto en UX y usabilidad B2B. Analizas sitios web desde la perspectiva del perfil: {request.persona}. Respondes en español con formato Markdown."},
+                {"role":"user","content":user_content}
             ],
             max_completion_tokens=4000
         )
-        
-        screenshot_note = "📸 *Análisis basado en captura de pantalla real + texto extraído*" if screenshot_b64 else "📝 *Análisis basado en texto extraído (screenshot no disponible)*"
-        
-        return {"report": screenshot_note + "\n\n" + response.choices[0].message.content}
-        
+
+        return {
+            "report": response.choices[0].message.content,
+            "screenshot_url": screenshot_url
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def home():
-    return {"status": "UX Auditor Pro con Visión Real - Activo ✅"}
+    return {"status": "UX Auditor Pro Visual - Activo ✅"}
