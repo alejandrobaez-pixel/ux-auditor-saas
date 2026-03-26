@@ -2,3 +2,5 @@ fastapi
 uvicorn
 pydantic
 langchain-google-genai
+requests
+beautifulsoup4
