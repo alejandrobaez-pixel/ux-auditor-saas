@@ -44,7 +44,7 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
                 {"role": "system", "content": f"Eres un experto en UX y usabilidad B2B. Analizas sitios web desde la perspectiva del perfil: {request.persona}. Siempre respondes en español con formato Markdown."},
                 {"role": "user", "content": f"Analiza este sitio web: {request.url}\n\nContenido real extraído:\n{site_content}\n\nGenera una auditoría heurística B2B completa basada en las 10 Heurísticas de Nielsen. Para cada heurística incluye: ✅ qué hace bien, ❌ qué falla, y 💡 recomendación específica."}
             ],
-            max_completion_tokens
+            max_completion_tokens=3000 
         )
         return {"report": response.choices[0].message.content}
     except Exception as e:
