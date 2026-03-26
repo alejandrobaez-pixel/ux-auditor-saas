@@ -1,6 +1,6 @@
-crewai==0.28.8
-langchain-google-genai==1.0.3
-fastapi==0.110.0
-uvicorn==0.29.0
-pydantic==2.6.4
-crewai-tools==0.1.7
+crewai
+crewai-tools
+langchain-google-genai
+fastapi
+uvicorn
+pydantic
