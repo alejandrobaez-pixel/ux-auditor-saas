@@ -2,10 +2,9 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
-import os, base64, asyncio
+import os, requests, base64
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-from playwright.async_api import async_playwright
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -19,30 +18,19 @@ class ChatRequest(BaseModel):
     report_context: str
     persona: str
 
-async def scrape_and_screenshot(page, url):
+def scrape_page(url):
     try:
-        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
-        await asyncio.sleep(1)
-        
-        html_content = await page.content()
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        for tag in soup(["script", "style", "noscript"]): tag.decompose()
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+        r = requests.get(url, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for tag in soup(["script","style","noscript"]): tag.decompose()
         title = soup.title.string.strip() if soup.title else "Sin título"
         headings = [h.get_text(strip=True) for h in soup.find_all(['h1','h2','h3'])][:12]
         links = [a.get_text(strip=True) for a in soup.find_all('a') if a.get_text(strip=True)][:30]
         body = soup.get_text(separator='\n', strip=True)[:2500]
-        
-        content_text = f"URL: {url}\nTÍTULO: {title}\nENCEBEZADOS:\n{chr(10).join(headings)}\nNAVEGACIÓN:\n{chr(10).join(links)}\nCONTENIDO:\n{body}"
-        
-        # Captura solo del VIEWPORT (mucho más liviana en RAM que full_page)
-        ss_bytes = await page.screenshot(full_page=False, type="jpeg", quality=50)
-        ss_b64 = base64.b64encode(ss_bytes).decode('utf-8')
-        
-        return soup, content_text, ss_b64
+        return soup, f"URL: {url}\nTÍTULO: {title}\nENCEBEZADOS:\n{chr(10).join(headings)}\nNAVEGACIÓN:\n{chr(10).join(links)}\nCONTENIDO:\n{body}"
     except Exception as e:
-        print(f"[ERROR scrape_and_screenshot] {url}: {e}")
-        return None, f"[Error extrayendo datos de {url}: {e}]", None
+        return None, f"[Error accediendo a {url}: {e}]"
 
 def extract_key_pages(base_url, soup):
     base = urlparse(base_url)
@@ -57,7 +45,6 @@ def extract_key_pages(base_url, soup):
     }
     found_urls = []
     seen = {base_url.rstrip('/'), base_root}
-    
     if soup:
         for a in soup.find_all('a', href=True):
             href = a['href']
@@ -77,66 +64,64 @@ def extract_key_pages(base_url, soup):
                         break
     return found_urls
 
+def take_screenshot(url, access_key):
+    try:
+        if not access_key:
+            return None
+        encoded_url = requests.utils.quote(url, safe='')
+        api_url = (
+            f"https://api.screenshotone.com/take"
+            f"?access_key={access_key}"
+            f"&url={encoded_url}"
+            f"&format=jpg"
+            f"&viewport_width=1280"
+            f"&viewport_height=800"
+            f"&full_page=false"
+            f"&image_quality=60"
+        )
+        r = requests.get(api_url, timeout=30)
+        if r.status_code == 200:
+            return base64.b64encode(r.content).decode('utf-8')
+        print(f"[SCREENSHOT ERROR] {url} → HTTP {r.status_code}: {r.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"[SCREENSHOT EXCEPTION] {url}: {e}")
+        return None
+
 @app.post("/audit")
 async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     if x_token != os.getenv("ACCESS_TOKEN"):
         raise HTTPException(status_code=403, detail="Token inválido")
     try:
-        pages_info = []
-        all_content_parts = []
-        
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-sync",
-                "--metrics-recording-only",
-                "--mute-audio",
-                "--no-first-run",
-                "--single-process",
-            ])
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
-            )
-            page = await context.new_page()
+        access_key = os.getenv("SCREENSHOTONE_KEY", "")
 
-            home_soup, home_content, home_b64 = await scrape_and_screenshot(page, request.url)
-            
-            all_content_parts.append(f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}")
-            pages_info.append({
-                "type": "Home", "url": request.url, 
-                "screenshot_url": f"data:image/jpeg;base64,{home_b64}" if home_b64 else None
-            })
-            
-            user_content = []
-            if home_b64:
-                user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
-                user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
+        home_soup, home_content = scrape_page(request.url)
+        home_b64 = take_screenshot(request.url, access_key)
 
-            key_pages = extract_key_pages(request.url, home_soup)
-            print(f"[DEBUG] Páginas clave detectadas: {key_pages}")
-            
-            for p_type, sub_url in key_pages:
-                _, content, ss_b64 = await scrape_and_screenshot(page, sub_url)
-                
-                all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
-                pages_info.append({
-                    "type": p_type, "url": sub_url, 
-                    "screenshot_url": f"data:image/jpeg;base64,{ss_b64}" if ss_b64 else None
-                })
-                
-                if ss_b64:
-                    user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
-                    user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{ss_b64}","detail":"high"}})
+        all_content_parts = [f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}"]
+        pages_info = [{"type": "Home", "url": request.url,
+            "screenshot_url": f"data:image/jpeg;base64,{home_b64}" if home_b64 else None}]
 
-            await browser.close()
+        user_content = []
+        if home_b64:
+            user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
+            user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
 
+        key_pages = extract_key_pages(request.url, home_soup)
+        print(f"[DEBUG] Subpáginas detectadas: {key_pages}")
+
+        for p_type, sub_url in key_pages:
+            _, content = scrape_page(sub_url)
+            ss_b64 = take_screenshot(sub_url, access_key)
+            all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
+            pages_info.append({"type": p_type, "url": sub_url,
+                "screenshot_url": f"data:image/jpeg;base64,{ss_b64}" if ss_b64 else None})
+            if ss_b64:
+                user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
+                user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{ss_b64}","detail":"high"}})
+
+        print(f"[DEBUG] Total páginas: {len(pages_info)}")
         all_content = "\n\n".join(all_content_parts)
-        print(f"[DEBUG] Total páginas analizadas: {len(pages_info)}")
 
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         user_content.append({"type":"text","text":f"""Contenido de {len(pages_info)} páginas clave extraídas:
@@ -148,39 +133,38 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
 Genera una AUDITORÍA UX B2B ULTRA-DETALLADA desde la perspectiva exclusiva del Buyer Persona: **{request.persona}**
 
 REGLA ESTRUCTURAL DE ORO PARA LA REDACCIÓN (SECCIÓN 4):
-En CADA UNO de los 5 Módulos a continuación, tu redacción DEBE incluir de forma clara los siguientes apartados:
-1. **Cómo lo percibe el buyer persona**: Tu perspectiva sobre este módulo al navegar.
-2. **Puntos de Validación Específicos**: DEBES EXPLICAR por qué otorgas la calificación ('cumple', 'parcial', o 'falla') y tu evaluación a los siguientes puntos de cada módulo. Basándote en las evidencias de los textos y capturas envíadas.
+En CADA UNO de los 5 Módulos, incluye:
+1. **Cómo lo percibe el buyer persona**
+2. **Puntos de Validación Específicos** con calificación ('cumple', 'parcial', o 'falla')
 3. **✅ Fortalezas**
 4. **❌ Debilidades**
 5. **💡 Recomendaciones**
 
-¡MUY IMPORTANTE!: NO escribas en tu texto cosas como "📸 TESTIGO VISUAL" o textos con URLs para simular imágenes. LA INTERFAZ FÍSICA YA INSERTARÁ LAS IMÁGENES AUTOMÁTICAMENTE; tú únicamente desarrolla los puntos.
+¡MUY IMPORTANTE!: NO escribas "📸 TESTIGO VISUAL" ni URLs de imágenes. La interfaz las inserta automáticamente.
 
 ## MÓDULO 1: Identidad Visual y Marca
-Puntos de Validación a escribir obligatoriamente: Identidad de Marca, Diseño Gráfico, Paleta de Colores, Tipografías.
+Puntos obligatorios: Identidad de Marca, Diseño Gráfico, Paleta de Colores, Tipografías.
 
 ## MÓDULO 2: Experiencia de Usuario y Usabilidad UX/UI
-Puntos de Validación a escribir obligatoriamente: Navegación, Arquitectura, Facilidad de Uso.
+Puntos obligatorios: Navegación, Arquitectura, Facilidad de Uso.
 
 ## MÓDULO 3: Calidad y Relevancia del Contenido
-Puntos de Validación a escribir obligatoriamente: Calidad de Contenido, Interlinking, Lenguaje B2B.
+Puntos obligatorios: Calidad de Contenido, Interlinking, Lenguaje B2B.
 
 ## MÓDULO 4: Proceso de Compra y E-commerce
-Puntos de Validación a escribir obligatoriamente: Accesibilidad de Productos, Carrito, Checkout, Políticas.
-Construye el viaje desde el home hasta la compra/producto analizando los fricciones de este flujo con las capturas de Tienda, Producto y Carrito.
+Puntos obligatorios: Accesibilidad de Productos, Carrito, Checkout, Políticas.
 
 ## MÓDULO 5: Arquitectura y Estructura SEO
-Puntos de Validación a escribir obligatoriamente: Keywords Menú, Keywords Long-tail, Jerarquía.
+Puntos obligatorios: Keywords Menú, Keywords Long-tail, Jerarquía.
 
 ---
 
-Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las evaluaciones reales:
+Al FINAL incluye OBLIGATORIAMENTE:
 
 ---JSON_DATA---
 {{
   "scores": {{"Identidad Visual": 6,"UX Usabilidad": 5,"Contenido": 5,"Proceso Compra": 4,"SEO": 5}},
-  "gap": {{"actual": "Resumen.","expected": "Lo esperado."}},
+  "gap": {{"actual": "Resumen actual.","expected": "Lo esperado."}},
   "matrix": {{
     "Identidad Visual": {{"base":4,"cumple":2,"parcial":1,"falla":1}},
     "Exp. Usabilidad": {{"base":3,"cumple":2,"parcial":1,"falla":0}},
@@ -190,37 +174,37 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
   }},
   "criteria_status": {{
     "Identidad Visual": [
-      {{"name":"Identidad de Marca","status":"cumple","note":"Evaluación"}},
-      {{"name":"Diseño Gráfico","status":"parcial","note":"Revisar"}},
-      {{"name":"Paleta de Colores","status":"cumple","note":"Correcta"}},
-      {{"name":"Tipografías","status":"parcial","note":"Legibilidad"}}
+      {{"name":"Identidad de Marca","status":"cumple","note":"Nota"}},
+      {{"name":"Diseño Gráfico","status":"parcial","note":"Nota"}},
+      {{"name":"Paleta de Colores","status":"cumple","note":"Nota"}},
+      {{"name":"Tipografías","status":"parcial","note":"Nota"}}
     ],
     "Exp. Usabilidad": [
-      {{"name":"Navegación","status":"cumple","note":"Fluida"}},
-      {{"name":"Arquitectura","status":"parcial","note":"Mejorar"}},
-      {{"name":"Facilidad de Uso","status":"parcial","note":"Revisar"}}
+      {{"name":"Navegación","status":"cumple","note":"Nota"}},
+      {{"name":"Arquitectura","status":"parcial","note":"Nota"}},
+      {{"name":"Facilidad de Uso","status":"parcial","note":"Nota"}}
     ],
     "Relevancia Contenido": [
-      {{"name":"Calidad Contenido","status":"parcial","note":"Incompleto"}},
-      {{"name":"Interlinking","status":"falla","note":"Sin links"}},
-      {{"name":"Lenguaje B2B","status":"cumple","note":"Adecuado"}}
+      {{"name":"Calidad Contenido","status":"parcial","note":"Nota"}},
+      {{"name":"Interlinking","status":"falla","note":"Nota"}},
+      {{"name":"Lenguaje B2B","status":"cumple","note":"Nota"}}
     ],
     "Proceso de Compra": [
-      {{"name":"Accesibilidad","status":"falla","note":"Barrera"}},
-      {{"name":"Carrito","status":"parcial","note":"Mejorar"}},
-      {{"name":"Checkout","status":"falla","note":"Complejo"}},
-      {{"name":"Políticas","status":"cumple","note":"Visibles"}}
+      {{"name":"Accesibilidad","status":"falla","note":"Nota"}},
+      {{"name":"Carrito","status":"parcial","note":"Nota"}},
+      {{"name":"Checkout","status":"falla","note":"Nota"}},
+      {{"name":"Políticas","status":"cumple","note":"Nota"}}
     ],
     "Estructura SEO": [
-      {{"name":"Keywords Menú","status":"cumple","note":"Relevantes"}},
-      {{"name":"Keywords Long-tail","status":"cumple","note":"Buenas"}},
-      {{"name":"Jerarquía","status":"falla","note":"Revisar"}}
+      {{"name":"Keywords Menú","status":"cumple","note":"Nota"}},
+      {{"name":"Keywords Long-tail","status":"cumple","note":"Nota"}},
+      {{"name":"Jerarquía","status":"falla","note":"Nota"}}
     ]
   }},
   "seo_proposals": [
-    {{"url":"/propuesta-1/","type":"Clúster B2B Central","color":"purple","desc":"Estrategia."}},
-    {{"url":"/propuesta-2/","type":"Transaccional/Cotización","color":"red","desc":"Estrategia."}},
-    {{"url":"/propuesta-3/","type":"Inbound / Informativa","color":"green","desc":"Estrategia."}}
+    {{"url":"/propuesta-1/","type":"Clúster B2B Central","color":"purple","desc":"Descripción."}},
+    {{"url":"/propuesta-2/","type":"Transaccional/Cotización","color":"red","desc":"Descripción."}},
+    {{"url":"/propuesta-3/","type":"Inbound / Informativa","color":"green","desc":"Descripción."}}
   ],
   "action_plan": {{
     "now": ["Acción 1.", "Acción 2.", "Acción 3."],
@@ -234,7 +218,7 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role":"system","content":f"Eres un experto en UX y marketing B2B. Analizas sitios exclusivamente desde la perspectiva del Buyer Persona: {request.persona}. Respondes en español con Markdown profesional. Al final SIEMPRE incluyes el bloque JSON estructurado exactamente como se solicita."},
+                {"role":"system","content":f"Eres un experto en UX y marketing B2B. Analizas sitios desde la perspectiva del Buyer Persona: {request.persona}. Respondes en español con Markdown profesional. Siempre incluyes el JSON estructurado al final."},
                 {"role":"user","content":user_content}
             ],
             max_completion_tokens=6000
@@ -256,18 +240,14 @@ async def run_chat(request: ChatRequest, x_token: str = Header(None)):
         raise HTTPException(status_code=403, detail="Token inválido")
     try:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
         system_prompt = f"""Eres el buyer persona: "{request.persona}".
-Acabas de visitar una página web y estas son TUS impresiones y fricciones basadas ESTRICTAMENTE en este reporte:
+Acabas de visitar una página web. Tus impresiones basadas ESTRICTAMENTE en este reporte:
 
-=== CONTEXTO DEL REPORTE ===
+=== CONTEXTO ===
 {request.report_context}
-=============================
+================
 
-REGLAS ESTRICTAS:
-1. Responde SIEMPRE en primera persona como el buyer persona.
-2. NUNCA inventes información que no esté en el reporte proporcionado. Si te preguntan algo fuera de este contexto, responde que no lo experimentaste o no lo recuerdas.
-3. Tus respuestas deben ser hiper concretas, directas y conversacionales."""
+REGLAS: Responde en primera persona, nunca inventes, sé concreto y directo."""
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -277,30 +257,22 @@ REGLAS ESTRICTAS:
             ],
             max_completion_tokens=500
         )
-        
         return {"reply": response.choices[0].message.content}
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def home():
-    return {"status": "UX Auditor Pro — Motor Playwright Activo ✅"}
+    return {"status": "UX Auditor Pro — Backend Ligero Activo ✅"}
 
 @app.get("/debug")
-async def debug_crawl(url: str):
-    """Endpoint de diagnóstico: devuelve qué subpáginas detecta el crawler sin tomar screenshots."""
+def debug_crawl(url: str):
     try:
-        import requests as req_lib
-        r = req_lib.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
         key_pages = extract_key_pages(url, soup)
         all_links = [a['href'] for a in soup.find_all('a', href=True)][:50]
-        return {
-            "base_url": url,
-            "total_links_found": len(all_links),
-            "sample_links": all_links[:20],
-            "key_pages_detected": key_pages
-        }
+        return {"base_url": url, "total_links_found": len(all_links),
+                "sample_links": all_links[:20], "key_pages_detected": key_pages}
     except Exception as e:
         return {"error": str(e)}
