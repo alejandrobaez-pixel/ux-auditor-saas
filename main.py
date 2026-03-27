@@ -5,6 +5,7 @@ from openai import OpenAI
 import os, requests, base64
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+import asyncio
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -32,27 +33,40 @@ def scrape_page(url):
     except Exception as e:
         return None, f"[Error accediendo a {url}: {e}]"
 
-def extract_menu_links(base_url, soup, max_links=3):
-    if not soup: return []
+def extract_key_pages(base_url, soup):
     base = urlparse(base_url)
     base_root = f"{base.scheme}://{base.netloc}"
-    found = set()
-    priority_kw = ['producto','product','tienda','shop','nosotros','about','contacto',
-                   'contact','blog','catalogo','catalog','servicio','service','categoria','category']
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        if href.startswith('/'):
-            full = base_root + href
-        elif href.startswith('http') and base.netloc in href:
-            full = href
-        else:
-            continue
-        full = full.split('?')[0].split('#')[0].rstrip('/')
-        if full == base_url.rstrip('/') or full == base_root: continue
-        if any(kw in full.lower() for kw in priority_kw):
-            found.add(full)
-        if len(found) >= max_links * 2: break
-    return list(found)[:max_links]
+    patterns = {
+        'Blog': ['/blog', '/noticias', '/novedades', '/articles', '/recursos'],
+        'Nosotros': ['/nosotros', '/about', '/quienes-somos', '/empresa', '/conocenos'],
+        'Tienda': ['/tienda', '/shop', '/catalogo', '/productos', '/store'],
+        'Categoria': ['/categoria', '/category', '/coleccion', '/collections', '/c/'],
+        'Producto': ['/producto', '/product', '/p/', '/item/'],
+        'Carrito o Políticas': ['/carrito', '/cart', '/checkout', '/politicas', '/devoluciones', '/envios']
+    }
+    found_urls = []
+    seen = {base_url.rstrip('/'), base_root}
+    
+    if soup:
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if href.startswith('/'):
+                full = base_root + href
+            elif href.startswith('http') and base.netloc in href:
+                full = href
+            else:
+                continue
+                
+            full_clean = full.split('?')[0].split('#')[0].rstrip('/')
+            if full_clean in seen: continue
+            
+            for cat, kws in patterns.items():
+                if cat not in [x[0] for x in found_urls]:
+                    if any(kw in full_clean.lower() for kw in kws):
+                        found_urls.append((cat, full_clean))
+                        seen.add(full_clean)
+                        break
+    return found_urls
 
 def take_screenshot(url, access_key):
     try:
@@ -74,35 +88,40 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     try:
         access_key = os.getenv("SCREENSHOTONE_KEY", "")
 
+        # 1. Scrape Home
         home_soup, home_content = scrape_page(request.url)
-        sub_urls = extract_menu_links(request.url, home_soup, max_links=3)
+        
+        # 2. Extract specific page types
+        key_pages = extract_key_pages(request.url, home_soup)
+        
+        all_content_parts = [f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}"]
+        pages_info = [{"type": "Home", "url": request.url, "screenshot_url": None}]
+        
+        # Screenshot Home
+        home_b64, home_ss_url = take_screenshot(request.url, access_key)
+        pages_info[0]["screenshot_url"] = home_ss_url
+        
+        user_content = []
+        if home_b64:
+            user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
+            user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
 
-        all_content_parts = [f"=== PÁGINA PRINCIPAL ===\n{home_content}"]
-        pages_info = [{"url": request.url, "screenshot_url": None}]
-
-        for sub_url in sub_urls:
+        # Scrape and Screenshot Sub-pages
+        for p_type, sub_url in key_pages:
             _, content = scrape_page(sub_url)
-            all_content_parts.append(f"=== SUBPÁGINA: {sub_url} ===\n{content}")
-            pages_info.append({"url": sub_url, "screenshot_url": None})
+            ss_b64, ss_url = take_screenshot(sub_url, access_key)
+            
+            all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
+            pages_info.append({"type": p_type, "url": sub_url, "screenshot_url": ss_url})
+            
+            if ss_b64:
+                user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
+                user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{ss_b64}","detail":"high"}})
 
         all_content = "\n\n".join(all_content_parts)
 
-        home_b64, home_ss_url = take_screenshot(request.url, access_key)
-        pages_info[0]["screenshot_url"] = home_ss_url
-
-        for idx, sub_url in enumerate(sub_urls[:2]):
-            _, ss_url = take_screenshot(sub_url, access_key)
-            if idx + 1 < len(pages_info):
-                pages_info[idx + 1]["screenshot_url"] = ss_url
-
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        user_content = []
-
-        if home_b64:
-            user_content.append({"type":"text","text":f"CAPTURA REAL de la página principal ({request.url}):"})
-            user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
-
-        user_content.append({"type":"text","text":f"""Contenido extraído de {len(pages_info)} páginas del sitio:
+        user_content.append({"type":"text","text":f"""Contenido de {len(pages_info)} páginas clave extraídas:
 
 {all_content}
 
@@ -110,42 +129,34 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
 
 Genera una AUDITORÍA UX B2B ULTRA-DETALLADA desde la perspectiva exclusiva del Buyer Persona: **{request.persona}**
 
+REGLA ESTRUCTURAL DE ORO PARA LA REDACCIÓN (SECCIÓN 4):
+En CADA UNO de los 5 Módulos a continuación, tu redacción DEBE incluir de forma clara los siguientes apartados:
+1. **Cómo lo percibe el buyer persona**: Tu perspectiva sobre este módulo al navegar.
+2. **Desglose de Puntos de Evaluación**: Es vital que a continuación evalúes, listes y comentes TODOS los PUNTOS DE VALIDACIÓN indicados para cada módulo. Explica directamente por qué le das la calificación que veré más abajo en tus notas breves de las Tarjetas Pivotales (ej. explicando por qué Identidad es profesional y por qué Diseño debe revisarse). Haz referencias cruzadas hacia las capturas de pantalla de las páginas visitadas.
+3. **✅ Fortalezas**
+4. **❌ Debilidades**
+5. **💡 Recomendaciones**
+
 ## MÓDULO 1: Identidad Visual y Marca
-Evalúa cómo percibe el Buyer Persona:
-- **Identidad de Marca**: Logos, tono (¿B2B o B2C?), voz de marca
-- **Diseño Gráfico**: Disposición, espacios, estilo de fotografía
-- **Paleta de Colores**: Primarios/secundarios (hex si posible), contraste, impacto psicológico
-- **Tipografías**: Familia, jerarquía, legibilidad para el perfil
-✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
+Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Identidad de Marca, Diseño Gráfico, Paleta de Colores, Tipografías.
+Considera todo el sitio (Home, Nosotros, Blog, Tienda, Producto).
 
 ## MÓDULO 2: Experiencia de Usuario y Usabilidad UX/UI
-- **Navegación y Arquitectura**: Facilidad para el perfil de encontrar lo que busca
-- **Facilidad de Uso**: CTAs, formularios, fluidez
-- **Coherencia Heurística**: Visibilidad, prevención de errores, control
-✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
+Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Navegación, Arquitectura, Facilidad de Uso.
 
 ## MÓDULO 3: Calidad y Relevancia del Contenido
-- **Calidad del Contenido**: Profundidad, valor para el perfil
-- **Interlinking y Semántica**: Clústeres, navegación entre contenidos
-- **Lenguaje y Tono B2B**: ¿El contenido habla al perfil?
-✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
+Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Calidad de Contenido, Interlinking, Lenguaje B2B.
 
 ## MÓDULO 4: Proceso de Compra y E-commerce
-- **Accesibilidad de Productos**: Clics para llegar al producto
-- **Carrito / Cotizador**: Facilidad de compra B2B
-- **Proceso de Checkout**: Rapidez, registro, métodos pago
-- **Políticas Logísticas**: Transparencia de envíos y devoluciones
-✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
+Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Accesibilidad de Productos, Carrito, Checkout, Políticas.
+Construye el viaje desde el home hasta la compra/producto analizando los fricciones de este flujo con las capturas de Tienda, Producto y Carrito.
 
 ## MÓDULO 5: Arquitectura y Estructura SEO
-- **Keywords del Menú**: Palabras clave en navegación
-- **Keywords Long-tail**: Cobertura de búsquedas específicas del perfil
-- **Jerarquía y Sitemap**: Estructura de URLs, profundidad
-✅ Fortalezas ❌ Debilidades 💡 Recomendaciones
+Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Keywords Menú, Keywords Long-tail, Jerarquía.
 
 ---
 
-Al FINAL de todo el análisis, incluye OBLIGATORIAMENTE este bloque JSON con tus evaluaciones reales:
+Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las evaluaciones reales. Lo que escribas en las notas debe coincidir con el desarrollo profundo hecho arriba:
 
 ---JSON_DATA---
 {{
@@ -157,8 +168,8 @@ Al FINAL de todo el análisis, incluye OBLIGATORIAMENTE este bloque JSON con tus
     "SEO": 5
   }},
   "gap": {{
-    "actual": "Descripción concisa del estado real del sitio (1-2 oraciones con hallazgos clave).",
-    "expected": "Lo que el buyer persona espera encontrar en este tipo de sitio (1-2 oraciones)."
+    "actual": "Resumen del estado real del sitio.",
+    "expected": "Lo esperado por el buyer persona."
   }},
   "matrix": {{
     "Identidad Visual": {{"base":4,"cumple":2,"parcial":1,"falla":1}},
@@ -169,62 +180,49 @@ Al FINAL de todo el análisis, incluye OBLIGATORIAMENTE este bloque JSON con tus
   }},
   "criteria_status": {{
     "Identidad Visual": [
-      {{"name":"Identidad de Marca","status":"cumple","note":"Descripción breve"}},
-      {{"name":"Diseño Gráfico","status":"parcial","note":"Descripción breve"}},
-      {{"name":"Paleta de Colores","status":"cumple","note":"Descripción breve"}},
-      {{"name":"Tipografías","status":"parcial","note":"Descripción breve"}}
+      {{"name":"Identidad de Marca","status":"cumple","note":"Evaluación corta (ej. Profesional)"}},
+      {{"name":"Diseño Gráfico","status":"parcial","note":"Revisar"}},
+      {{"name":"Paleta de Colores","status":"cumple","note":"Correcta"}},
+      {{"name":"Tipografías","status":"parcial","note":"Legibilidad"}}
     ],
     "Exp. Usabilidad": [
-      {{"name":"Navegación","status":"cumple","note":"Descripción breve"}},
-      {{"name":"Arquitectura","status":"parcial","note":"Descripción breve"}},
-      {{"name":"Facilidad de Uso","status":"parcial","note":"Descripción breve"}}
+      {{"name":"Navegación","status":"cumple","note":"Fluida"}},
+      {{"name":"Arquitectura","status":"parcial","note":"Mejorar"}},
+      {{"name":"Facilidad de Uso","status":"parcial","note":"Revisar"}}
     ],
     "Relevancia Contenido": [
-      {{"name":"Calidad de contenido","status":"parcial","note":"Descripción breve"}},
-      {{"name":"Interlinking","status":"falla","note":"Descripción breve"}},
-      {{"name":"Lenguaje B2B","status":"cumple","note":"Descripción breve"}}
+      {{"name":"Calidad Contenido","status":"parcial","note":"Incompleto"}},
+      {{"name":"Interlinking","status":"falla","note":"Sin links"}},
+      {{"name":"Lenguaje B2B","status":"cumple","note":"Adecuado"}}
     ],
     "Proceso de Compra": [
-      {{"name":"Accesibilidad","status":"falla","note":"Descripción breve"}},
-      {{"name":"Carrito","status":"parcial","note":"Descripción breve"}},
-      {{"name":"Checkout","status":"falla","note":"Descripción breve"}},
-      {{"name":"Políticas","status":"cumple","note":"Descripción breve"}}
+      {{"name":"Accesibilidad","status":"falla","note":"Barrera"}},
+      {{"name":"Carrito","status":"parcial","note":"Mejorar"}},
+      {{"name":"Checkout","status":"falla","note":"Complejo"}},
+      {{"name":"Políticas","status":"cumple","note":"Visibles"}}
     ],
     "Estructura SEO": [
-      {{"name":"Keywords Menú","status":"cumple","note":"Descripción breve"}},
-      {{"name":"Keywords Long-tail","status":"cumple","note":"Descripción breve"}},
-      {{"name":"Jerarquía","status":"falla","note":"Descripción breve"}}
+      {{"name":"Keywords Menú","status":"cumple","note":"Relevantes"}},
+      {{"name":"Keywords Long-tail","status":"cumple","note":"Buenas"}},
+      {{"name":"Jerarquía","status":"falla","note":"Revisar"}}
     ]
   }},
   "seo_proposals": [
-    {{"url":"/propuesta-url-b2b/","type":"Clúster B2B Central","color":"purple","desc":"Descripción estratégica de la página propuesta."}},
-    {{"url":"/propuesta-url-transaccional/","type":"Transaccional/Cotización","color":"red","desc":"Descripción estratégica."}},
-    {{"url":"/propuesta-url-inbound/","type":"Inbound / Informativa","color":"green","desc":"Descripción estratégica."}}
+    {{"url":"/propuesta-1/","type":"Clúster B2B Central","color":"purple","desc":"Estrategia."}},
+    {{"url":"/propuesta-2/","type":"Transaccional/Cotización","color":"red","desc":"Estrategia."}},
+    {{"url":"/propuesta-3/","type":"Inbound / Informativa","color":"green","desc":"Estrategia."}}
   ],
   "action_plan": {{
-    "now": [
-      "Acción inmediata 1 (0-30 días, alto impacto, bajo costo).",
-      "Acción inmediata 2.",
-      "Acción inmediata 3."
-    ],
-    "next": [
-      "Mejora estructural 1 (30-90 días).",
-      "Mejora estructural 2.",
-      "Mejora estructural 3."
-    ],
-    "later": [
-      "Inversión estratégica 1 (90+ días, SEO).",
-      "Inversión estratégica 2.",
-      "Inversión estratégica 3."
-    ]
+    "now": ["Acción 1.", "Acción 2.", "Acción 3."],
+    "next": ["Acción 1.", "Acción 2.", "Acción 3."],
+    "later": ["Acción 1.", "Acción 2.", "Acción 3."]
   }}
 }}
 ---END_JSON---
-
-IMPORTANTE: Sustituye TODOS los valores del JSON con los datos reales del análisis. El JSON debe estar completo y válido."""})
+"""})
 
         response = client.chat.completions.create(
-            model="gpt-5.4-nano",
+            model="gpt-4o",
             messages=[
                 {"role":"system","content":f"Eres un experto en UX y marketing B2B. Analizas sitios exclusivamente desde la perspectiva del Buyer Persona: {request.persona}. Respondes en español con Markdown profesional. Al final SIEMPRE incluyes el bloque JSON estructurado exactamente como se solicita."},
                 {"role":"user","content":user_content}
@@ -263,7 +261,7 @@ REGLAS ESTRICTAS:
 4. No menciones "según el reporte". Háblalo como tu propia experiencia visitando la web."""
 
         response = client.chat.completions.create(
-            model="gpt-5.4-nano",
+            model="gpt-4o-mini",
             messages=[
                 {"role":"system","content":system_prompt},
                 {"role":"user","content":request.message}
