@@ -26,12 +26,10 @@ async def scrape_and_screenshot(page, url):
     """
     try:
         # Ir a la página y esperar que el DOM se cargue.
-        await page.goto(url, timeout=20000)
-        await page.wait_for_load_state("domcontentloaded")
-        # Pequeña pausa para asegurar carga de imágenes CSS animaciones
-        await asyncio.sleep(2)
+        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+        await asyncio.sleep(1)
         
-        # 1. Extracción de Contenido (Mismo parseo de BS4 pero con el DOM Real)
+        # 1. Extracción de Contenido
         html_content = await page.content()
         soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -43,12 +41,13 @@ async def scrape_and_screenshot(page, url):
         
         content_text = f"URL: {url}\nTÍTULO: {title}\nENCEBEZADOS:\n{chr(10).join(headings)}\nNAVEGACIÓN:\n{chr(10).join(links)}\nCONTENIDO:\n{body}"
         
-        # 2. Captura de Pantalla Completa (Full Page)
-        ss_bytes = await page.screenshot(full_page=True, type="jpeg", quality=60)
+        # 2. Captura solo del VIEWPORT (mucho más liviana en RAM que full_page)
+        ss_bytes = await page.screenshot(full_page=False, type="jpeg", quality=50)
         ss_b64 = base64.b64encode(ss_bytes).decode('utf-8')
         
         return soup, content_text, ss_b64
     except Exception as e:
+        print(f"[ERROR scrape_and_screenshot] {url}: {e}")
         return None, f"[Error extrayendo datos de {url}: {e}]", None
 
 def extract_key_pages(base_url, soup):
@@ -96,7 +95,18 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
         
         # Iniciamos el Motor Playwright UNA SOLA VEZ para ahorrar memoria RAM en Render
         async with async_playwright() as p:
-            browser = await p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            browser = await p.chromium.launch(args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--metrics-recording-only",
+                "--mute-audio",
+                "--no-first-run",
+                "--single-process",  # Ahorra ~100MB en entornos con poca RAM
+            ])
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
@@ -296,3 +306,22 @@ REGLAS ESTRICTAS:
 @app.get("/")
 def home():
     return {"status": "UX Auditor Pro — Motor Playwright Activo ✅"}
+
+@app.get("/debug")
+async def debug_crawl(url: str):
+    """Endpoint de diagnóstico: devuelve qué subpáginas detecta el crawler sin tomar screenshots."""
+    try:
+        import requests as req_lib
+        from bs4 import BeautifulSoup as BS
+        r = req_lib.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BS(r.text, 'html.parser')
+        key_pages = extract_key_pages(url, soup)
+        all_links = [a['href'] for a in soup.find_all('a', href=True)][:50]
+        return {
+            "base_url": url,
+            "total_links_found": len(all_links),
+            "sample_links": all_links[:20],
+            "key_pages_detected": key_pages
+        }
+    except Exception as e:
+        return {"error": str(e)}
