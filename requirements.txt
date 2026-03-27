@@ -3,3 +3,4 @@ uvicorn
 openai
 beautifulsoup4
 playwright
+requests
