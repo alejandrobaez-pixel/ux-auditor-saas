@@ -20,15 +20,103 @@ class ChatRequest(BaseModel):
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
 
-# Patrones de subpáginas por categoría
 PATTERNS = {
     'Blog o Novedades': ['/blog/', '/noticias/', '/novedades/', '/articles/', '/recursos/', '/recetas/', '/recetario/', '/blog', '/noticias'],
-    'Nosotros': ['/nosotros/', '/about/', '/quienes-somos/', '/empresa/', '/historia/', '/conocenos/', '/equipo/', '/nosotros', '/historia', '/about'],
+    'Nosotros': ['/nosotros/', '/about/', '/quienes-somos/', '/empresa/', '/historia/', '/equipo/', '/nosotros', '/historia', '/about'],
     'Tienda': ['/tienda/', '/shop/', '/productos/', '/catalogo/', '/store/', '/productos-chantilly/', '/tienda', '/shop', '/productos', '/productos-chantilly'],
-    'Categoria': ['/toppings/', '/cremas/', '/harinas/', '/ganaches/', '/categoria/', '/category/', '/coleccion/', '/collections/', '/toppings', '/cremas'],
-    'Producto': ['/crema-batida-2/', '/crema-batida/', '/top-cream/', '/chanty-wip/', '/producto/', '/product/', '/crema-batida-2', '/crema-batida'],
-    'Politicas': ['/politica-de-inocuidad/', '/politicas/', '/politica/', '/devoluciones/', '/envios/', '/privacidad/', '/carrito/', '/checkout/', '/politicas', '/politica']
+    'Categoria': ['/toppings/', '/cremas/', '/harinas/', '/ganaches/', '/categoria/', '/category/', '/coleccion/', '/toppings', '/cremas'],
+    'Producto': ['/crema-batida-2/', '/crema-batida/', '/top-cream/', '/chanty-wip/', '/producto/', '/crema-batida-2', '/crema-batida'],
+    'Politicas': ['/politica-de-inocuidad/', '/politicas/', '/politica/', '/devoluciones/', '/envios/', '/privacidad/', '/carrito/', '/checkout/', '/politicas', '/politica-de-inocuidad']
 }
+
+# Bloque JSON que el LLM debe completar con valores reales
+JSON_TEMPLATE = """---JSON_DATA---
+{
+  "scores": {"Identidad Visual": 6, "UX Usabilidad": 5, "Contenido": 5, "Proceso Compra": 4, "SEO": 5},
+  "gap": {"actual": "Resumen del estado actual del sitio.", "expected": "Lo que esperaria el buyer persona."},
+  "matrix": {
+    "Identidad Visual": {"base": 4, "cumple": 2, "parcial": 1, "falla": 1},
+    "Exp. Usabilidad": {"base": 3, "cumple": 2, "parcial": 1, "falla": 0},
+    "Relevancia Contenido": {"base": 3, "cumple": 1, "parcial": 1, "falla": 1},
+    "Proceso de Compra": {"base": 4, "cumple": 1, "parcial": 1, "falla": 2},
+    "Estructura SEO": {"base": 3, "cumple": 2, "parcial": 0, "falla": 1}
+  },
+  "criteria_status": {
+    "Identidad Visual": [
+      {"name": "Identidad de Marca", "status": "cumple", "note": "Nota real"},
+      {"name": "Diseno Grafico", "status": "parcial", "note": "Nota real"},
+      {"name": "Paleta de Colores", "status": "cumple", "note": "Nota real"},
+      {"name": "Tipografias", "status": "parcial", "note": "Nota real"}
+    ],
+    "Exp. Usabilidad": [
+      {"name": "Navegacion", "status": "cumple", "note": "Nota real"},
+      {"name": "Arquitectura", "status": "parcial", "note": "Nota real"},
+      {"name": "Facilidad de Uso", "status": "parcial", "note": "Nota real"}
+    ],
+    "Relevancia Contenido": [
+      {"name": "Calidad Contenido", "status": "parcial", "note": "Nota real"},
+      {"name": "Interlinking", "status": "falla", "note": "Nota real"},
+      {"name": "Lenguaje B2B", "status": "cumple", "note": "Nota real"}
+    ],
+    "Proceso de Compra": [
+      {"name": "Accesibilidad", "status": "falla", "note": "Nota real"},
+      {"name": "Carrito", "status": "parcial", "note": "Nota real"},
+      {"name": "Checkout", "status": "falla", "note": "Nota real"},
+      {"name": "Politicas", "status": "cumple", "note": "Nota real"}
+    ],
+    "Estructura SEO": [
+      {"name": "Keywords Menu", "status": "cumple", "note": "Nota real"},
+      {"name": "Keywords Long-tail", "status": "cumple", "note": "Nota real"},
+      {"name": "Jerarquia", "status": "falla", "note": "Nota real"}
+    ]
+  },
+  "seo_proposals": [
+    {"url": "/propuesta-seo-1/", "type": "Cluster B2B Central", "color": "purple", "desc": "Descripcion real."},
+    {"url": "/propuesta-seo-2/", "type": "Transaccional", "color": "red", "desc": "Descripcion real."},
+    {"url": "/propuesta-seo-3/", "type": "Inbound / Informativa", "color": "green", "desc": "Descripcion real."}
+  ],
+  "action_plan": {
+    "now": ["Accion concreta 1.", "Accion concreta 2.", "Accion concreta 3."],
+    "next": ["Accion concreta 1.", "Accion concreta 2.", "Accion concreta 3."],
+    "later": ["Accion concreta 1.", "Accion concreta 2.", "Accion concreta 3."]
+  }
+}
+---END_JSON---"""
+
+
+def build_audit_prompt(persona, n_pages, all_content):
+    """Construye el prompt de auditoria con los encabezados exactos que el frontend espera."""
+    intro = (
+        f"Contenido de {n_pages} paginas clave extraidas:\n\n{all_content}\n\n"
+        "---\n\n"
+        f"Genera una AUDITORIA UX B2B ULTRA-DETALLADA desde la perspectiva exclusiva del Buyer Persona: **{persona}**\n\n"
+        "REGLA ESTRUCTURAL DE ORO (SECCION 4):\n"
+        "En CADA UNO de los 5 Modulos incluye:\n"
+        "1. **Como lo percibe el buyer persona**\n"
+        "2. **Puntos de Validacion** con calificacion (cumple/parcial/falla)\n"
+        "3. **Fortalezas**\n"
+        "4. **Debilidades**\n"
+        "5. **Recomendaciones**\n\n"
+        "MUY IMPORTANTE: NO escribas texto como 'TESTIGO VISUAL' ni pongas URLs de imagenes. "
+        "La interfaz inserta las capturas automaticamente.\n\n"
+    )
+    # Estos encabezados DEBEN ser exactos: el frontend JS los busca literalmente
+    modules = (
+        "## MODULO 1: Identidad Visual y Marca\n"
+        "Puntos obligatorios: Identidad de Marca, Diseno Grafico, Paleta de Colores, Tipografias.\n\n"
+        "## MODULO 2: Experiencia de Usuario y Usabilidad UX/UI\n"
+        "Puntos obligatorios: Navegacion, Arquitectura, Facilidad de Uso.\n\n"
+        "## MODULO 3: Calidad y Relevancia del Contenido\n"
+        "Puntos obligatorios: Calidad de Contenido, Interlinking, Lenguaje B2B.\n\n"
+        "## MODULO 4: Proceso de Compra y E-commerce\n"
+        "Puntos obligatorios: Accesibilidad de Productos, Carrito, Checkout, Politicas.\n\n"
+        "## MODULO 5: Arquitectura y Estructura SEO\n"
+        "Puntos obligatorios: Keywords Menu, Keywords Long-tail, Jerarquia.\n\n"
+        "---\n\n"
+        "Al FINAL incluye OBLIGATORIAMENTE el siguiente bloque JSON con valores REALES (no los numeros de ejemplo):\n\n"
+    )
+    return intro + modules + JSON_TEMPLATE
+
 
 def scrape_page(url):
     try:
@@ -45,13 +133,14 @@ def scrape_page(url):
     except Exception as e:
         return None, f"[Error accediendo a {url}: {e}]"
 
+
 def extract_key_pages(base_url, soup):
     base = urlparse(base_url)
     base_root = f"{base.scheme}://{base.netloc}"
     found = []
     seen = {base_url.rstrip('/'), base_root, base_root + '/'}
 
-    # Paso 1: Buscar links en el HTML estático
+    # Paso 1: buscar en HTML estatico
     if soup:
         for a in soup.find_all('a', href=True):
             href = a['href']
@@ -71,9 +160,9 @@ def extract_key_pages(base_url, soup):
                         seen.add(full_clean)
                         break
 
-    # Paso 2: Si el sitio usa JS y no encontramos links, probamos URLs comunes con HEAD
+    # Paso 2: si el sitio usa JS (pocos links en HTML), probar URLs comunes directamente
     if len(found) < 2:
-        print(f"[DEBUG] Modo probing activado (solo {len(found)} links en HTML estatico)")
+        print(f"[DEBUG] Probing activado — solo {len(found)} links en HTML estatico")
         for cat, paths in PATTERNS.items():
             if cat not in [x[0] for x in found]:
                 for path in paths:
@@ -86,12 +175,12 @@ def extract_key_pages(base_url, soup):
                         if r.status_code in [200, 301, 302]:
                             found.append((cat, candidate_clean))
                             seen.add(candidate_clean)
-                            print(f"[DEBUG] Probado OK: {cat} -> {candidate}")
+                            print(f"[DEBUG] Encontrado via probing: {cat} -> {candidate}")
                             break
                     except Exception:
                         continue
-
     return found
+
 
 def take_screenshot(url, access_key):
     try:
@@ -111,11 +200,12 @@ def take_screenshot(url, access_key):
         r = requests.get(api_url, timeout=30)
         if r.status_code == 200:
             return base64.b64encode(r.content).decode('utf-8')
-        print(f"[SCREENSHOT ERROR] {url} HTTP {r.status_code}: {r.text[:100]}")
+        print(f"[SCREENSHOT ERROR] {url} HTTP {r.status_code}")
         return None
     except Exception as e:
         print(f"[SCREENSHOT EXCEPTION] {url}: {e}")
         return None
+
 
 @app.post("/audit")
 async def run_audit(request: AuditRequest, x_token: str = Header(None)):
@@ -140,15 +230,14 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
             user_content.append({"type": "text", "text": f"CAPTURA DE HOME ({request.url}):"})
             user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{home_b64}", "detail": "high"}})
 
-        # 2. Detectar subpaginas (con fallback probing para sitios JS)
+        # 2. Subpaginas con fallback probing
         key_pages = extract_key_pages(request.url, home_soup)
-        print(f"[DEBUG] Paginas clave detectadas: {key_pages}")
+        print(f"[DEBUG] Paginas detectadas: {key_pages}")
 
-        # 3. Scrape + Screenshot secuencial
+        # 3. Scrape + screenshot secuencial
         for p_type, sub_url in key_pages:
             _, content = scrape_page(sub_url)
             ss_b64 = take_screenshot(sub_url, access_key)
-
             all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
             pages_info.append({
                 "type": p_type,
@@ -159,90 +248,14 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
                 user_content.append({"type": "text", "text": f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
                 user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ss_b64}", "detail": "high"}})
 
-        print(f"[DEBUG] Total paginas procesadas: {len(pages_info)}")
+        print(f"[DEBUG] Total paginas: {len(pages_info)}")
         all_content = "\n\n".join(all_content_parts)
 
-        # 4. OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        prompt_text = (
-            f"Contenido de {len(pages_info)} paginas clave extraidas:\n\n{all_content}\n\n---\n\n"
-            f"Genera una AUDITORIA UX B2B ULTRA-DETALLADA desde la perspectiva exclusiva del Buyer Persona: **{request.persona}**\n\n"
-            "REGLA ESTRUCTURAL DE ORO (SECCION 4):\n"
-            "En CADA UNO de los 5 Modulos, incluye:\n"
-            "1. **Como lo percibe el buyer persona**\n"
-            "2. **Puntos de Validacion Especificos** con calificacion (cumple/parcial/falla)\n"
-            "3. **Fortalezas**\n"
-            "4. **Debilidades**\n"
-            "5. **Recomendaciones**\n\n"
-            "MUY IMPORTANTE: NO escribas 'TESTIGO VISUAL' ni URLs de imagenes. La interfaz las inserta sola.\n\n"
-            "## MODULO 1: Identidad Visual y Marca\n"
-            "Puntos: Identidad de Marca, Diseno Grafico, Paleta de Colores, Tipografias.\n\n"
-            "## MODULO 2: Experiencia de Usuario y Usabilidad UX/UI\n"
-            "Puntos: Navegacion, Arquitectura, Facilidad de Uso.\n\n"
-            "## MODULO 3: Calidad y Relevancia del Contenido\n"
-            "Puntos: Calidad de Contenido, Interlinking, Lenguaje B2B.\n\n"
-            "## MODULO 4: Proceso de Compra y E-commerce\n"
-            "Puntos: Accesibilidad de Productos, Carrito, Checkout, Politicas.\n\n"
-            "## MODULO 5: Arquitectura y Estructura SEO\n"
-            "Puntos: Keywords Menu, Keywords Long-tail, Jerarquia.\n\n"
-            "---\n\n"
-            "Al FINAL incluye OBLIGATORIAMENTE:\n\n"
-            "---JSON_DATA---\n"
-            "{\n"
-            '  "scores": {"Identidad Visual": 6, "UX Usabilidad": 5, "Contenido": 5, "Proceso Compra": 4, "SEO": 5},\n'
-            '  "gap": {"actual": "Resumen actual.", "expected": "Lo esperado."},\n'
-            '  "matrix": {\n'
-            '    "Identidad Visual": {"base": 4, "cumple": 2, "parcial": 1, "falla": 1},\n'
-            '    "Exp. Usabilidad": {"base": 3, "cumple": 2, "parcial": 1, "falla": 0},\n'
-            '    "Relevancia Contenido": {"base": 3, "cumple": 1, "parcial": 1, "falla": 1},\n'
-            '    "Proceso de Compra": {"base": 4, "cumple": 1, "parcial": 1, "falla": 2},\n'
-            '    "Estructura SEO": {"base": 3, "cumple": 2, "parcial": 0, "falla": 1}\n'
-            '  },\n'
-            '  "criteria_status": {\n'
-            '    "Identidad Visual": [\n'
-            '      {"name": "Identidad de Marca", "status": "cumple", "note": "Nota"},\n'
-            '      {"name": "Diseno Grafico", "status": "parcial", "note": "Nota"},\n'
-            '      {"name": "Paleta de Colores", "status": "cumple", "note": "Nota"},\n'
-            '      {"name": "Tipografias", "status": "parcial", "note": "Nota"}\n'
-            '    ],\n'
-            '    "Exp. Usabilidad": [\n'
-            '      {"name": "Navegacion", "status": "cumple", "note": "Nota"},\n'
-            '      {"name": "Arquitectura", "status": "parcial", "note": "Nota"},\n'
-            '      {"name": "Facilidad de Uso", "status": "parcial", "note": "Nota"}\n'
-            '    ],\n'
-            '    "Relevancia Contenido": [\n'
-            '      {"name": "Calidad Contenido", "status": "parcial", "note": "Nota"},\n'
-            '      {"name": "Interlinking", "status": "falla", "note": "Nota"},\n'
-            '      {"name": "Lenguaje B2B", "status": "cumple", "note": "Nota"}\n'
-            '    ],\n'
-            '    "Proceso de Compra": [\n'
-            '      {"name": "Accesibilidad", "status": "falla", "note": "Nota"},\n'
-            '      {"name": "Carrito", "status": "parcial", "note": "Nota"},\n'
-            '      {"name": "Checkout", "status": "falla", "note": "Nota"},\n'
-            '      {"name": "Politicas", "status": "cumple", "note": "Nota"}\n'
-            '    ],\n'
-            '    "Estructura SEO": [\n'
-            '      {"name": "Keywords Menu", "status": "cumple", "note": "Nota"},\n'
-            '      {"name": "Keywords Long-tail", "status": "cumple", "note": "Nota"},\n'
-            '      {"name": "Jerarquia", "status": "falla", "note": "Nota"}\n'
-            '    ]\n'
-            '  },\n'
-            '  "seo_proposals": [\n'
-            '    {"url": "/propuesta-1/", "type": "Cluster B2B Central", "color": "purple", "desc": "Descripcion."},\n'
-            '    {"url": "/propuesta-2/", "type": "Transaccional", "color": "red", "desc": "Descripcion."},\n'
-            '    {"url": "/propuesta-3/", "type": "Inbound / Informativa", "color": "green", "desc": "Descripcion."}\n'
-            '  ],\n'
-            '  "action_plan": {\n'
-            '    "now": ["Accion 1.", "Accion 2.", "Accion 3."],\n'
-            '    "next": ["Accion 1.", "Accion 2.", "Accion 3."],\n'
-            '    "later": ["Accion 1.", "Accion 2.", "Accion 3."]\n'
-            '  }\n'
-            "}\n"
-            "---END_JSON---\n"
-        )
-
+        # 4. Prompt y llamada a OpenAI
+        prompt_text = build_audit_prompt(request.persona, len(pages_info), all_content)
         user_content.append({"type": "text", "text": prompt_text})
 
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -250,7 +263,8 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
                     "role": "system",
                     "content": (
                         f"Eres un experto en UX y marketing B2B. Analizas sitios desde la perspectiva del Buyer Persona: {request.persona}. "
-                        "Respondes en espanol con Markdown profesional. Siempre incluyes el JSON estructurado EXACTAMENTE al final."
+                        "Respondes en espanol con Markdown profesional. "
+                        "OBLIGATORIO: incluyes siempre al final el bloque ---JSON_DATA--- con valores reales, terminado con ---END_JSON---."
                     )
                 },
                 {"role": "user", "content": user_content}
@@ -268,6 +282,7 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/chat")
 async def run_chat(request: ChatRequest, x_token: str = Header(None)):
     if x_token != os.getenv("ACCESS_TOKEN"):
@@ -276,9 +291,9 @@ async def run_chat(request: ChatRequest, x_token: str = Header(None)):
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         system_prompt = (
             f'Eres el buyer persona: "{request.persona}". '
-            "Acabas de visitar una pagina web. Tus impresiones basadas ESTRICTAMENTE en este reporte:\n\n"
+            "Tus impresiones basadas ESTRICTAMENTE en este reporte:\n\n"
             f"=== CONTEXTO ===\n{request.report_context}\n================\n\n"
-            "REGLAS: Responde en primera persona, nunca inventes, se concreto y directo."
+            "REGLAS: Responde en primera persona, nunca inventes, se concreto."
         )
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -292,9 +307,11 @@ async def run_chat(request: ChatRequest, x_token: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/")
 def home():
     return {"status": "UX Auditor Pro — Backend Ligero con Probing Activo"}
+
 
 @app.get("/debug")
 def debug_crawl(url: str):
