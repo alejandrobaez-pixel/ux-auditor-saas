@@ -2,9 +2,10 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
-import os, requests, base64
+import os, base64, asyncio
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+from playwright.async_api import async_playwright
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -18,19 +19,37 @@ class ChatRequest(BaseModel):
     report_context: str
     persona: str
 
-def scrape_page(url):
+async def scrape_and_screenshot(page, url):
+    """
+    Usa el motor Chromium de Playwright abierto para extraer el HTML renderizado 
+    por Javascript y simultáneamente tomar la foto HQ en Base64. 
+    """
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
-        r = requests.get(url, headers=headers, timeout=12)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for tag in soup(["script","style","noscript"]): tag.decompose()
+        # Ir a la página y esperar que el DOM se cargue.
+        await page.goto(url, timeout=20000)
+        await page.wait_for_load_state("domcontentloaded")
+        # Pequeña pausa para asegurar carga de imágenes CSS animaciones
+        await asyncio.sleep(2)
+        
+        # 1. Extracción de Contenido (Mismo parseo de BS4 pero con el DOM Real)
+        html_content = await page.content()
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        for tag in soup(["script", "style", "noscript"]): tag.decompose()
         title = soup.title.string.strip() if soup.title else "Sin título"
         headings = [h.get_text(strip=True) for h in soup.find_all(['h1','h2','h3'])][:12]
         links = [a.get_text(strip=True) for a in soup.find_all('a') if a.get_text(strip=True)][:30]
         body = soup.get_text(separator='\n', strip=True)[:2500]
-        return soup, f"URL: {url}\nTÍTULO: {title}\nENCEBEZADOS:\n{chr(10).join(headings)}\nNAVEGACIÓN:\n{chr(10).join(links)}\nCONTENIDO:\n{body}"
+        
+        content_text = f"URL: {url}\nTÍTULO: {title}\nENCEBEZADOS:\n{chr(10).join(headings)}\nNAVEGACIÓN:\n{chr(10).join(links)}\nCONTENIDO:\n{body}"
+        
+        # 2. Captura de Pantalla Completa (Full Page)
+        ss_bytes = await page.screenshot(full_page=True, type="jpeg", quality=60)
+        ss_b64 = base64.b64encode(ss_bytes).decode('utf-8')
+        
+        return soup, content_text, ss_b64
     except Exception as e:
-        return None, f"[Error accediendo a {url}: {e}]"
+        return None, f"[Error extrayendo datos de {url}: {e}]", None
 
 def extract_key_pages(base_url, soup):
     base = urlparse(base_url)
@@ -67,63 +86,59 @@ def extract_key_pages(base_url, soup):
                         break
     return found_urls
 
-def take_screenshot(url, access_key):
-    try:
-        if not access_key: return None
-        encoded_url = requests.utils.quote(url, safe='')
-        params = f"?access_key={access_key}&url={encoded_url}&format=jpg&viewport_width=1280&viewport_height=800&full_page=true&image_quality=65"
-        screenshot_url = f"https://api.screenshotone.com/take{params}"
-        r = requests.get(screenshot_url, timeout=25)
-        if r.status_code == 200:
-            return base64.b64encode(r.content).decode('utf-8')
-        return None
-    except:
-        return None
-
 @app.post("/audit")
 async def run_audit(request: AuditRequest, x_token: str = Header(None)):
     if x_token != os.getenv("ACCESS_TOKEN"):
         raise HTTPException(status_code=403, detail="Token inválido")
     try:
-        access_key = os.getenv("SCREENSHOTONE_KEY", "")
+        pages_info = []
+        all_content_parts = []
+        
+        # Iniciamos el Motor Playwright UNA SOLA VEZ para ahorrar memoria RAM en Render
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
+            )
+            page = await context.new_page()
 
-        # 1. Scrape Home
-        home_soup, home_content = scrape_page(request.url)
-        
-        # 2. Extract specific page types
-        key_pages = extract_key_pages(request.url, home_soup)
-        
-        all_content_parts = [f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}"]
-        
-        # 3. Screenshot Home in Raw B64 format to bypass client connection limits
-        home_b64 = take_screenshot(request.url, access_key)
-        pages_info = [{
-            "type": "Home", "url": request.url, 
-            "screenshot_url": f"data:image/jpeg;base64,{home_b64}" if home_b64 else None
-        }]
-        
-        user_content = []
-        if home_b64:
-            user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
-            user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
-
-        # 4. Scrape and Screenshot Sub-pages strictly consecutively (avoid 429 Too Many Requests)
-        for p_type, sub_url in key_pages:
-            _, content = scrape_page(sub_url)
-            ss_b64 = take_screenshot(sub_url, access_key)
+            # 1. Scrape y Captura del Home
+            home_soup, home_content, home_b64 = await scrape_and_screenshot(page, request.url)
             
-            all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
+            all_content_parts.append(f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}")
             pages_info.append({
-                "type": p_type, "url": sub_url, 
-                "screenshot_url": f"data:image/jpeg;base64,{ss_b64}" if ss_b64 else None
+                "type": "Home", "url": request.url, 
+                "screenshot_url": f"data:image/jpeg;base64,{home_b64}" if home_b64 else None
             })
             
-            if ss_b64:
-                user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
-                user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{ss_b64}","detail":"high"}})
+            user_content = []
+            if home_b64:
+                user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
+                user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
+
+            # 2. Extract specific page types
+            key_pages = extract_key_pages(request.url, home_soup)
+            
+            # 3. Scrape and Screenshot Sub-pages secuencialmente reusando la pestaña
+            for p_type, sub_url in key_pages:
+                _, content, ss_b64 = await scrape_and_screenshot(page, sub_url)
+                
+                all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
+                pages_info.append({
+                    "type": p_type, "url": sub_url, 
+                    "screenshot_url": f"data:image/jpeg;base64,{ss_b64}" if ss_b64 else None
+                })
+                
+                if ss_b64:
+                    user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
+                    user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{ss_b64}","detail":"high"}})
+
+            await browser.close() # Apagamos el motor para liberar RAM
 
         all_content = "\n\n".join(all_content_parts)
 
+        # 4. Invocación de OpenAI
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         user_content.append({"type":"text","text":f"""Contenido de {len(pages_info)} páginas clave extraídas:
 
@@ -239,7 +254,7 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
             "report": response.choices[0].message.content,
             "pages": pages_info,
             "pages_analyzed": len(pages_info),
-            "screenshot_url": home_b64 if home_b64 else None
+            "screenshot_url": home_b64 if "home_b64" in locals() and home_b64 is not None else None
         }
 
     except Exception as e:
@@ -280,4 +295,4 @@ REGLAS ESTRICTAS:
 
 @app.get("/")
 def home():
-    return {"status": "UX Auditor Pro — Reporte B2B Estructurado ✅"}
+    return {"status": "UX Auditor Pro — Motor Playwright Activo ✅"}
