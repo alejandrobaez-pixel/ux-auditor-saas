@@ -20,16 +20,10 @@ class ChatRequest(BaseModel):
     persona: str
 
 async def scrape_and_screenshot(page, url):
-    """
-    Usa el motor Chromium de Playwright abierto para extraer el HTML renderizado 
-    por Javascript y simultáneamente tomar la foto HQ en Base64. 
-    """
     try:
-        # Ir a la página y esperar que el DOM se cargue.
         await page.goto(url, timeout=25000, wait_until="domcontentloaded")
         await asyncio.sleep(1)
         
-        # 1. Extracción de Contenido
         html_content = await page.content()
         soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -41,7 +35,7 @@ async def scrape_and_screenshot(page, url):
         
         content_text = f"URL: {url}\nTÍTULO: {title}\nENCEBEZADOS:\n{chr(10).join(headings)}\nNAVEGACIÓN:\n{chr(10).join(links)}\nCONTENIDO:\n{body}"
         
-        # 2. Captura solo del VIEWPORT (mucho más liviana en RAM que full_page)
+        # Captura solo del VIEWPORT (mucho más liviana en RAM que full_page)
         ss_bytes = await page.screenshot(full_page=False, type="jpeg", quality=50)
         ss_b64 = base64.b64encode(ss_bytes).decode('utf-8')
         
@@ -73,10 +67,8 @@ def extract_key_pages(base_url, soup):
                 full = href
             else:
                 continue
-                
             full_clean = full.split('?')[0].split('#')[0].rstrip('/')
             if full_clean in seen: continue
-            
             for cat, kws in patterns.items():
                 if cat not in [x[0] for x in found_urls]:
                     if any(kw in full_clean.lower() for kw in kws):
@@ -93,7 +85,6 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
         pages_info = []
         all_content_parts = []
         
-        # Iniciamos el Motor Playwright UNA SOLA VEZ para ahorrar memoria RAM en Render
         async with async_playwright() as p:
             browser = await p.chromium.launch(args=[
                 "--no-sandbox",
@@ -105,7 +96,7 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
                 "--metrics-recording-only",
                 "--mute-audio",
                 "--no-first-run",
-                "--single-process",  # Ahorra ~100MB en entornos con poca RAM
+                "--single-process",
             ])
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
@@ -113,7 +104,6 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
             )
             page = await context.new_page()
 
-            # 1. Scrape y Captura del Home
             home_soup, home_content, home_b64 = await scrape_and_screenshot(page, request.url)
             
             all_content_parts.append(f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}")
@@ -127,10 +117,9 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
                 user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
                 user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
 
-            # 2. Extract specific page types
             key_pages = extract_key_pages(request.url, home_soup)
+            print(f"[DEBUG] Páginas clave detectadas: {key_pages}")
             
-            # 3. Scrape and Screenshot Sub-pages secuencialmente reusando la pestaña
             for p_type, sub_url in key_pages:
                 _, content, ss_b64 = await scrape_and_screenshot(page, sub_url)
                 
@@ -144,11 +133,11 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
                     user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
                     user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{ss_b64}","detail":"high"}})
 
-            await browser.close() # Apagamos el motor para liberar RAM
+            await browser.close()
 
         all_content = "\n\n".join(all_content_parts)
+        print(f"[DEBUG] Total páginas analizadas: {len(pages_info)}")
 
-        # 4. Invocación de OpenAI
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         user_content.append({"type":"text","text":f"""Contenido de {len(pages_info)} páginas clave extraídas:
 
@@ -186,21 +175,12 @@ Puntos de Validación a escribir obligatoriamente: Keywords Menú, Keywords Long
 
 ---
 
-Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las evaluaciones reales. Lo que escribas en las notas debe coincidir con el desarrollo profundo hecho arriba:
+Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las evaluaciones reales:
 
 ---JSON_DATA---
 {{
-  "scores": {{
-    "Identidad Visual": 6,
-    "UX Usabilidad": 5,
-    "Contenido": 5,
-    "Proceso Compra": 4,
-    "SEO": 5
-  }},
-  "gap": {{
-    "actual": "Resumen.",
-    "expected": "Lo esperado."
-  }},
+  "scores": {{"Identidad Visual": 6,"UX Usabilidad": 5,"Contenido": 5,"Proceso Compra": 4,"SEO": 5}},
+  "gap": {{"actual": "Resumen.","expected": "Lo esperado."}},
   "matrix": {{
     "Identidad Visual": {{"base":4,"cumple":2,"parcial":1,"falla":1}},
     "Exp. Usabilidad": {{"base":3,"cumple":2,"parcial":1,"falla":0}},
@@ -210,7 +190,7 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
   }},
   "criteria_status": {{
     "Identidad Visual": [
-      {{"name":"Identidad de Marca","status":"cumple","note":"Evaluación corta (ej. Profesional)"}},
+      {{"name":"Identidad de Marca","status":"cumple","note":"Evaluación"}},
       {{"name":"Diseño Gráfico","status":"parcial","note":"Revisar"}},
       {{"name":"Paleta de Colores","status":"cumple","note":"Correcta"}},
       {{"name":"Tipografías","status":"parcial","note":"Legibilidad"}}
@@ -264,7 +244,7 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
             "report": response.choices[0].message.content,
             "pages": pages_info,
             "pages_analyzed": len(pages_info),
-            "screenshot_url": home_b64 if "home_b64" in locals() and home_b64 is not None else None
+            "screenshot_url": home_b64 if home_b64 else None
         }
 
     except Exception as e:
@@ -312,9 +292,8 @@ async def debug_crawl(url: str):
     """Endpoint de diagnóstico: devuelve qué subpáginas detecta el crawler sin tomar screenshots."""
     try:
         import requests as req_lib
-        from bs4 import BeautifulSoup as BS
         r = req_lib.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BS(r.text, 'html.parser')
+        soup = BeautifulSoup(r.text, 'html.parser')
         key_pages = extract_key_pages(url, soup)
         all_links = [a['href'] for a in soup.find_all('a', href=True)][:50]
         return {
