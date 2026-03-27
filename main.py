@@ -5,7 +5,6 @@ from openai import OpenAI
 import os, requests, base64
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-import asyncio
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -70,16 +69,16 @@ def extract_key_pages(base_url, soup):
 
 def take_screenshot(url, access_key):
     try:
-        if not access_key: return None, None
+        if not access_key: return None
         encoded_url = requests.utils.quote(url, safe='')
         params = f"?access_key={access_key}&url={encoded_url}&format=jpg&viewport_width=1280&viewport_height=800&full_page=true&image_quality=65"
         screenshot_url = f"https://api.screenshotone.com/take{params}"
         r = requests.get(screenshot_url, timeout=25)
         if r.status_code == 200:
-            return base64.b64encode(r.content).decode('utf-8'), screenshot_url
-        return None, None
+            return base64.b64encode(r.content).decode('utf-8')
+        return None
     except:
-        return None, None
+        return None
 
 @app.post("/audit")
 async def run_audit(request: AuditRequest, x_token: str = Header(None)):
@@ -95,24 +94,29 @@ async def run_audit(request: AuditRequest, x_token: str = Header(None)):
         key_pages = extract_key_pages(request.url, home_soup)
         
         all_content_parts = [f"=== PÁGINA PRINCIPAL (Home) ===\n{home_content}"]
-        pages_info = [{"type": "Home", "url": request.url, "screenshot_url": None}]
         
-        # Screenshot Home
-        home_b64, home_ss_url = take_screenshot(request.url, access_key)
-        pages_info[0]["screenshot_url"] = home_ss_url
+        # 3. Screenshot Home in Raw B64 format to bypass client connection limits
+        home_b64 = take_screenshot(request.url, access_key)
+        pages_info = [{
+            "type": "Home", "url": request.url, 
+            "screenshot_url": f"data:image/jpeg;base64,{home_b64}" if home_b64 else None
+        }]
         
         user_content = []
         if home_b64:
             user_content.append({"type":"text","text":f"CAPTURA DE HOME ({request.url}):"})
             user_content.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{home_b64}","detail":"high"}})
 
-        # Scrape and Screenshot Sub-pages
+        # 4. Scrape and Screenshot Sub-pages strictly consecutively (avoid 429 Too Many Requests)
         for p_type, sub_url in key_pages:
             _, content = scrape_page(sub_url)
-            ss_b64, ss_url = take_screenshot(sub_url, access_key)
+            ss_b64 = take_screenshot(sub_url, access_key)
             
             all_content_parts.append(f"=== {p_type.upper()} ({sub_url}) ===\n{content}")
-            pages_info.append({"type": p_type, "url": sub_url, "screenshot_url": ss_url})
+            pages_info.append({
+                "type": p_type, "url": sub_url, 
+                "screenshot_url": f"data:image/jpeg;base64,{ss_b64}" if ss_b64 else None
+            })
             
             if ss_b64:
                 user_content.append({"type":"text","text":f"CAPTURA DE {p_type.upper()} ({sub_url}):"})
@@ -132,27 +136,28 @@ Genera una AUDITORÍA UX B2B ULTRA-DETALLADA desde la perspectiva exclusiva del 
 REGLA ESTRUCTURAL DE ORO PARA LA REDACCIÓN (SECCIÓN 4):
 En CADA UNO de los 5 Módulos a continuación, tu redacción DEBE incluir de forma clara los siguientes apartados:
 1. **Cómo lo percibe el buyer persona**: Tu perspectiva sobre este módulo al navegar.
-2. **Desglose de Puntos de Evaluación**: Es vital que a continuación evalúes, listes y comentes TODOS los PUNTOS DE VALIDACIÓN indicados para cada módulo. Explica directamente por qué le das la calificación que veré más abajo en tus notas breves de las Tarjetas Pivotales (ej. explicando por qué Identidad es profesional y por qué Diseño debe revisarse). Haz referencias cruzadas hacia las capturas de pantalla de las páginas visitadas.
+2. **Puntos de Validación Específicos**: DEBES EXPLICAR por qué otorgas la calificación ('cumple', 'parcial', o 'falla') y tu evaluación a los siguientes puntos de cada módulo. Basándote en las evidencias de los textos y capturas envíadas.
 3. **✅ Fortalezas**
 4. **❌ Debilidades**
 5. **💡 Recomendaciones**
 
+¡MUY IMPORTANTE!: NO escribas en tu texto cosas como "📸 TESTIGO VISUAL" o textos con URLs para simular imágenes. LA INTERFAZ FÍSICA YA INSERTARÁ LAS IMÁGENES AUTOMÁTICAMENTE; tú únicamente desarrolla los puntos.
+
 ## MÓDULO 1: Identidad Visual y Marca
-Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Identidad de Marca, Diseño Gráfico, Paleta de Colores, Tipografías.
-Considera todo el sitio (Home, Nosotros, Blog, Tienda, Producto).
+Puntos de Validación a escribir obligatoriamente: Identidad de Marca, Diseño Gráfico, Paleta de Colores, Tipografías.
 
 ## MÓDULO 2: Experiencia de Usuario y Usabilidad UX/UI
-Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Navegación, Arquitectura, Facilidad de Uso.
+Puntos de Validación a escribir obligatoriamente: Navegación, Arquitectura, Facilidad de Uso.
 
 ## MÓDULO 3: Calidad y Relevancia del Contenido
-Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Calidad de Contenido, Interlinking, Lenguaje B2B.
+Puntos de Validación a escribir obligatoriamente: Calidad de Contenido, Interlinking, Lenguaje B2B.
 
 ## MÓDULO 4: Proceso de Compra y E-commerce
-Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Accesibilidad de Productos, Carrito, Checkout, Políticas.
+Puntos de Validación a escribir obligatoriamente: Accesibilidad de Productos, Carrito, Checkout, Políticas.
 Construye el viaje desde el home hasta la compra/producto analizando los fricciones de este flujo con las capturas de Tienda, Producto y Carrito.
 
 ## MÓDULO 5: Arquitectura y Estructura SEO
-Puntos de Validación a desarrollar y comentar obligatoriamente uno por uno: Keywords Menú, Keywords Long-tail, Jerarquía.
+Puntos de Validación a escribir obligatoriamente: Keywords Menú, Keywords Long-tail, Jerarquía.
 
 ---
 
@@ -168,8 +173,8 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
     "SEO": 5
   }},
   "gap": {{
-    "actual": "Resumen del estado real del sitio.",
-    "expected": "Lo esperado por el buyer persona."
+    "actual": "Resumen.",
+    "expected": "Lo esperado."
   }},
   "matrix": {{
     "Identidad Visual": {{"base":4,"cumple":2,"parcial":1,"falla":1}},
@@ -234,7 +239,7 @@ Al FINAL del análisis, incluye OBLIGATORIAMENTE este bloque JSON exacto con las
             "report": response.choices[0].message.content,
             "pages": pages_info,
             "pages_analyzed": len(pages_info),
-            "screenshot_url": home_ss_url
+            "screenshot_url": home_b64 if home_b64 else None
         }
 
     except Exception as e:
@@ -257,8 +262,7 @@ Acabas de visitar una página web y estas son TUS impresiones y fricciones basad
 REGLAS ESTRICTAS:
 1. Responde SIEMPRE en primera persona como el buyer persona.
 2. NUNCA inventes información que no esté en el reporte proporcionado. Si te preguntan algo fuera de este contexto, responde que no lo experimentaste o no lo recuerdas.
-3. Tus respuestas deben ser hiper concretas, conversacionales y directas (no actúes como un analista UX, actúa como el cliente que tuvo problemas o le gustó algo de esa página específica).
-4. No menciones "según el reporte". Háblalo como tu propia experiencia visitando la web."""
+3. Tus respuestas deben ser hiper concretas, directas y conversacionales."""
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
