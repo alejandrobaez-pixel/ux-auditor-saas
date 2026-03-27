@@ -36,12 +36,12 @@ def extract_key_pages(base_url, soup):
     base = urlparse(base_url)
     base_root = f"{base.scheme}://{base.netloc}"
     patterns = {
-        'Blog': ['/blog', '/noticias', '/novedades', '/articles', '/recursos'],
-        'Nosotros': ['/nosotros', '/about', '/quienes-somos', '/empresa', '/conocenos'],
-        'Tienda': ['/tienda', '/shop', '/catalogo', '/productos', '/store'],
-        'Categoria': ['/categoria', '/category', '/coleccion', '/collections', '/c/'],
-        'Producto': ['/producto', '/product', '/p/', '/item/'],
-        'Carrito o Políticas': ['/carrito', '/cart', '/checkout', '/politicas', '/devoluciones', '/envios']
+        'Blog o Novedades': ['/blog', '/noticias', '/novedades', '/articles', '/recursos', '/recetas', '/recetario'],
+        'Nosotros': ['/nosotros', '/about', '/quienes-somos', '/empresa', '/conocenos', '/historia', '/equipo'],
+        'Tienda': ['/tienda', '/shop', '/catalogo', '/productos', '/store', '/productos-chantilly'],
+        'Categoria': ['/categoria', '/category', '/coleccion', '/collections', '/c/', '/toppings', '/cremas', '/ganashes', '/harinas'],
+        'Producto': ['/producto', '/product', '/p/', '/item/', '/crema-batida', '/top-cream', '/chanty-wip'],
+        'Políticas o Privacidad': ['/carrito', '/cart', '/checkout', '/politicas', '/politica', '/devoluciones', '/envios', '/privacidad']
     }
     found_urls = []
     seen = {base_url.rstrip('/'), base_root}
