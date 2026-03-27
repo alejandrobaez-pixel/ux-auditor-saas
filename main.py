@@ -13,6 +13,11 @@ class AuditRequest(BaseModel):
     url: str
     persona: str
 
+class ChatRequest(BaseModel):
+    message: str
+    report_context: str
+    persona: str
+
 def scrape_page(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
@@ -234,6 +239,40 @@ IMPORTANTE: Sustituye TODOS los valores del JSON con los datos reales del análi
             "screenshot_url": home_ss_url
         }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat")
+async def run_chat(request: ChatRequest, x_token: str = Header(None)):
+    if x_token != os.getenv("ACCESS_TOKEN"):
+        raise HTTPException(status_code=403, detail="Token inválido")
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        system_prompt = f"""Eres el buyer persona: "{request.persona}".
+Acabas de visitar una página web y estas son TUS impresiones y fricciones basadas ESTRICTAMENTE en este reporte:
+
+=== CONTEXTO DEL REPORTE ===
+{request.report_context}
+=============================
+
+REGLAS ESTRICTAS:
+1. Responde SIEMPRE en primera persona como el buyer persona.
+2. NUNCA inventes información que no esté en el reporte proporcionado. Si te preguntan algo fuera de este contexto, responde que no lo experimentaste o no lo recuerdas.
+3. Tus respuestas deben ser hiper concretas, conversacionales y directas (no actúes como un analista UX, actúa como el cliente que tuvo problemas o le gustó algo de esa página específica).
+4. No menciones "según el reporte". Háblalo como tu propia experiencia visitando la web."""
+
+        response = client.chat.completions.create(
+            model="gpt-5.4-nano",
+            messages=[
+                {"role":"system","content":system_prompt},
+                {"role":"user","content":request.message}
+            ],
+            max_completion_tokens=500
+        )
+        
+        return {"reply": response.choices[0].message.content}
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
